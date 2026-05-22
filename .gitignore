@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+uploads/
+stderr.log
+admin_build/
+frontend_build/
+tmp/
+test_dns.js
+test_srv.js
+srv_debug.json
+dns_test.json

@@ -198,6 +198,8 @@ if (process.env.SERVE_ADMIN === 'true') {
   if (adminBuildPath) {
     console.log('Serving admin panel from', adminBuildPath);
     app.use('/admin', express.static(adminBuildPath));
+    // Admin Vite build uses root-relative /assets/... paths; serve them at root level
+    app.use('/assets', express.static(path.join(adminBuildPath, 'assets')));
     app.get('/admin*', (req, res) => {
       res.sendFile(path.join(adminBuildPath, 'index.html'));
     });

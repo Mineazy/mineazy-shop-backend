@@ -186,6 +186,26 @@ app.get('/', (req, res) => {
   });
 });
 
+// Optional: serve admin panel build when `SERVE_ADMIN=true` (cPanel unified deployment)
+// Must register before the frontend catch-all to avoid wildcard hijacking
+if (process.env.SERVE_ADMIN === 'true') {
+  const candidateAdminPaths = [
+    path.join(__dirname, '..', 'admin', 'dist'),
+    path.join(__dirname, 'admin_build'),
+  ];
+  const adminBuildPath = candidateAdminPaths.find(fs.existsSync);
+
+  if (adminBuildPath) {
+    console.log('Serving admin panel from', adminBuildPath);
+    app.use('/admin', express.static(adminBuildPath));
+    app.get('/admin*', (req, res) => {
+      res.sendFile(path.join(adminBuildPath, 'index.html'));
+    });
+  } else {
+    console.warn('SERVE_ADMIN enabled but admin build not found in any expected location:', candidateAdminPaths.join(', '));
+  }
+}
+
 // Optional: serve frontend build when `SERVE_FRONTEND=true`
 if (process.env.SERVE_FRONTEND === 'true') {
   const candidatePaths = [
@@ -203,25 +223,6 @@ if (process.env.SERVE_FRONTEND === 'true') {
     });
   } else {
     console.warn('SERVE_FRONTEND enabled but frontend build not found in any expected location:', candidatePaths.join(', '));
-  }
-}
-
-// Optional: serve admin panel build when `SERVE_ADMIN=true` (cPanel unified deployment)
-if (process.env.SERVE_ADMIN === 'true') {
-  const candidateAdminPaths = [
-    path.join(__dirname, '..', 'admin', 'dist'),
-    path.join(__dirname, 'admin_build'),
-  ];
-  const adminBuildPath = candidateAdminPaths.find(fs.existsSync);
-
-  if (adminBuildPath) {
-    console.log('Serving admin panel from', adminBuildPath);
-    app.use('/admin', express.static(adminBuildPath));
-    app.get('/admin*', (req, res) => {
-      res.sendFile(path.join(adminBuildPath, 'index.html'));
-    });
-  } else {
-    console.warn('SERVE_ADMIN enabled but admin build not found in any expected location:', candidateAdminPaths.join(', '));
   }
 }
 

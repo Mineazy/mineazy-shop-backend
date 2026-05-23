@@ -1,58 +1,21 @@
-﻿const mongoose = require('mongoose');
-const slugify = require('slugify');
+﻿const slugify = require('slugify');
+const MongoShim = require('../utils/mongoshim');
 
-const blogPostSchema = new mongoose.Schema({
-  title: {
-    type: String,
-    required: true,
-    trim: true
+const BlogPost = new MongoShim('blogposts', {
+  timestamps: true,
+  fields: {
+    title: { default: '' },
+    content: { default: '' },
+    excerpt: { default: '' },
+    tags: { default: [] },
+    status: { default: 'draft' },
+    viewCount: { default: 0 }
   },
-  slug: {
-    type: String,
-    unique: true
-  },
-  content: {
-    type: String,
-    required: true
-  },
-  excerpt: {
-    type: String,
-    maxlength: 300
-  },
-  featuredImage: String,
-  author: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
-  category: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'BlogCategory'
-  },
-  tags: [{
-    type: String,
-    trim: true
-  }],
-  status: {
-    type: String,
-    enum: ['draft', 'published'],
-    default: 'draft'
-  },
-  publishedAt: Date,
-  viewCount: {
-    type: Number,
-    default: 0
+  preSave: (doc, isNew) => {
+    if (doc.title && !doc.slug) {
+      doc.slug = slugify(doc.title, { lower: true });
+    }
   }
-}, {
-  timestamps: true
 });
 
-// Generate slug before saving
-blogPostSchema.pre('save', function(next) {
-  if (this.isModified('title')) {
-    this.slug = slugify(this.title, { lower: true });
-  }
-  next();
-});
-
-module.exports = mongoose.model('BlogPost', blogPostSchema);
+module.exports = BlogPost;

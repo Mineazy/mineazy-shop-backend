@@ -1,44 +1,19 @@
-﻿const mongoose = require('mongoose');
-const slugify = require('slugify');
+﻿const slugify = require('slugify');
+const MongoShim = require('../utils/mongoshim');
 
-const categorySchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-    trim: true
+const Category = new MongoShim('categories', {
+  timestamps: true,
+  fields: {
+    name: { default: '' },
+    description: { default: '' },
+    isActive: { default: true },
+    sortOrder: { default: 0 }
   },
-  slug: {
-    type: String,
-    unique: true
-  },
-  description: {
-    type: String,
-    trim: true
-  },
-  image: String,
-  parent: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Category',
-    default: null
-  },
-  isActive: {
-    type: Boolean,
-    default: true
-  },
-  sortOrder: {
-    type: Number,
-    default: 0
+  preSave: (doc, isNew) => {
+    if (doc.name && !doc.slug) {
+      doc.slug = slugify(doc.name, { lower: true });
+    }
   }
-}, {
-  timestamps: true
 });
 
-// Generate slug before saving
-categorySchema.pre('save', function(next) {
-  if (this.isModified('name')) {
-    this.slug = slugify(this.name, { lower: true });
-  }
-  next();
-});
-
-module.exports = mongoose.model('Category', categorySchema);
+module.exports = Category;

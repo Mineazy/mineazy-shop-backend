@@ -1,8 +1,10 @@
 ﻿const express = require('express');
 const ContactMessage = require('../models/ContactMessage');
+const User = require('../models/User');
 const { auth, authorize } = require('../middleware/auth');
 const emailService = require('../utils/emailService');
 const { body, validationResult } = require('express-validator');
+const MongoShim = require('../utils/mongoshim');
 
 const router = express.Router();
 
@@ -31,15 +33,13 @@ router.post('/', contactValidation, async (req, res) => {
   try {
     const { name, email, phone, subject, message } = req.body;
 
-    const contactMessage = new ContactMessage({
+    const contactMessage = await ContactMessage.insert({
       name,
       email,
       phone,
       subject,
       message
     });
-
-    await contactMessage.save();
 
     // Send notification email to admin
     try {
@@ -91,10 +91,10 @@ router.get('/', auth, authorize('content_manager', 'super_admin'), async (req, r
     const skip = (pageNum - 1) * limitNum;
 
     const messages = await ContactMessage.find(query)
-      .populate('respondedBy', 'firstName lastName')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNum);
+    await MongoShim.populate(messages, 'respondedBy', User, 'firstName lastName');
 
     const total = await ContactMessage.countDocuments(query);
 
@@ -116,8 +116,10 @@ router.get('/', auth, authorize('content_manager', 'super_admin'), async (req, r
 // @access  Private (Admin only)
 router.get('/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
-    const message = await ContactMessage.findById(req.params.id)
-      .populate('respondedBy', 'firstName lastName');
+    const message = await ContactMessage.findById(req.params.id);
+    if (message) {
+      await MongoShim.populate(message, 'respondedBy', User, 'firstName lastName');
+    }
 
     if (!message) {
       return res.status(404).json({ message: 'Contact message not found' });
@@ -126,7 +128,7 @@ router.get('/:id', auth, authorize('content_manager', 'super_admin'), async (req
     // Mark as read if it's new
     if (message.status === 'new') {
       message.status = 'read';
-      await message.save();
+      await ContactMessage.update({ _id: message._id }, message);
     }
 
     res.json(message);
@@ -177,7 +179,7 @@ router.put('/:id', auth, authorize('content_manager', 'super_admin'), async (req
       }
     }
 
-    await message.save();
+    await ContactMessage.update({ _id: message._id }, message);
 
     res.json({
       message: 'Contact message updated successfully',

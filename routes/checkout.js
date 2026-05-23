@@ -1,25 +1,27 @@
 ﻿const express = require('express');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
+const MongoShim = require('../utils/mongoshim');
 const { optionalAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// @route   POST /api/checkout/validate
-// @desc    Validate cart before checkout
-// @access  Public
 router.post('/validate', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
-    
+
     let cart;
     if (req.user) {
-      cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+      cart = await Cart.findOne({ user: req.user._id });
     } else {
-      cart = await Cart.findOne({ sessionId }).populate('items.product');
+      cart = await Cart.findOne({ sessionId });
     }
 
-    if (!cart || cart.items.length === 0) {
+    if (cart) {
+      await MongoShim.populate(cart, 'items.product', Product);
+    }
+
+    if (!cart || !cart.items || cart.items.length === 0) {
       return res.status(400).json({ message: 'Cart is empty' });
     }
 
@@ -28,7 +30,7 @@ router.post('/validate', optionalAuth, async (req, res) => {
 
     for (const item of cart.items) {
       const product = await Product.findById(item.product._id);
-      
+
       if (!product || !product.isActive) {
         validationErrors.push({
           item: item._id,
@@ -45,7 +47,6 @@ router.post('/validate', optionalAuth, async (req, res) => {
         continue;
       }
 
-      // Update price if changed
       const currentPrice = product.effectivePrice;
       if (item.price !== currentPrice) {
         item.price = currentPrice;
@@ -61,7 +62,9 @@ router.post('/validate', optionalAuth, async (req, res) => {
       });
     }
 
-    await cart.save();
+    cart.totalItems = cart.items.reduce((t, i) => t + i.quantity, 0);
+    cart.subtotal = cart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+    await Cart.update({ _id: cart._id }, cart);
 
     res.json({
       message: 'Cart validated successfully',
@@ -73,22 +76,23 @@ router.post('/validate', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   POST /api/checkout/calculate
-// @desc    Calculate order totals
-// @access  Public
 router.post('/calculate', optionalAuth, async (req, res) => {
   try {
     const { shippingAddress } = req.body;
     const sessionId = req.headers['x-session-id'];
-    
+
     let cart;
     if (req.user) {
-      cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+      cart = await Cart.findOne({ user: req.user._id });
     } else {
-      cart = await Cart.findOne({ sessionId }).populate('items.product');
+      cart = await Cart.findOne({ sessionId });
     }
 
-    if (!cart || cart.items.length === 0) {
+    if (cart) {
+      await MongoShim.populate(cart, 'items.product', Product);
+    }
+
+    if (!cart || !cart.items || cart.items.length === 0) {
       return res.status(400).json({ message: 'Cart is empty' });
     }
 
@@ -97,16 +101,14 @@ router.post('/calculate', optionalAuth, async (req, res) => {
       subtotal += item.price * item.quantity;
     }
 
-    // Calculate tax (example: 15.5% VAT)
     const taxRate = 0.155;
     const tax = subtotal * taxRate;
 
-    // Calculate shipping (simplified logic)
     let shipping = 0;
     if (shippingAddress && shippingAddress.country !== 'Zimbabwe') {
-      shipping = subtotal * 0.1; // 10% of subtotal for international shipping
+      shipping = subtotal * 0.1;
     } else if (subtotal < 100) {
-      shipping = 10; // $10 shipping for orders under $100
+      shipping = 10;
     }
 
     const total = subtotal + tax + shipping;
@@ -122,9 +124,6 @@ router.post('/calculate', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   POST /api/checkout/validate-address
-// @desc    Validate shipping address
-// @access  Public
 router.post('/validate-address', async (req, res) => {
   try {
     const { address } = req.body;
@@ -136,12 +135,11 @@ router.post('/validate-address', async (req, res) => {
     const { street, city, country } = address;
 
     if (!street || !city || !country) {
-      return res.status(400).json({ 
-        message: 'Street, city, and country are required' 
+      return res.status(400).json({
+        message: 'Street, city, and country are required'
       });
     }
 
-    // Basic address validation
     const validationErrors = [];
 
     if (street.length < 5) {
@@ -172,9 +170,6 @@ router.post('/validate-address', async (req, res) => {
   }
 });
 
-// @route   POST /api/checkout/validate-customer
-// @desc    Validate customer information
-// @access  Public
 router.post('/validate-customer', async (req, res) => {
   try {
     const { customerInfo } = req.body;
@@ -223,9 +218,6 @@ router.post('/validate-customer', async (req, res) => {
   }
 });
 
-// @route   POST /api/checkout/guest
-// @desc    Guest checkout validation
-// @access  Public
 router.post('/guest', async (req, res) => {
   try {
     const {
@@ -238,12 +230,16 @@ router.post('/guest', async (req, res) => {
       return res.status(400).json({ message: 'Missing required checkout information' });
     }
 
-    const cart = await Cart.findOne({ sessionId }).populate('items.product');
-    if (!cart || cart.items.length === 0) {
+    const cart = await Cart.findOne({ sessionId });
+
+    if (cart) {
+      await MongoShim.populate(cart, 'items.product', Product);
+    }
+
+    if (!cart || !cart.items || cart.items.length === 0) {
       return res.status(400).json({ message: 'Cart is empty' });
     }
 
-    // Validate stock one more time
     for (const item of cart.items) {
       const product = await Product.findById(item.product._id);
       if (!product.inStock || product.stockQuantity < item.quantity) {
@@ -264,16 +260,12 @@ router.post('/guest', async (req, res) => {
   }
 });
 
-// @route   GET /api/checkout/shipping-methods
-// @desc    Get available shipping methods
-// @access  Public
 router.get('/shipping-methods', async (req, res) => {
   try {
     const { country, total = 0 } = req.query;
 
     const shippingMethods = [];
 
-    // Standard shipping methods
     if (country === 'Zimbabwe') {
       shippingMethods.push({
         id: 'standard-zw',
@@ -299,12 +291,11 @@ router.get('/shipping-methods', async (req, res) => {
         estimatedDays: '0'
       });
     } else {
-      // International shipping
       shippingMethods.push({
         id: 'international',
         name: 'International Shipping',
         description: '7-14 business days',
-        cost: total * 0.1, // 10% of order value
+        cost: total * 0.1,
         estimatedDays: '7-14'
       });
     }
@@ -315,9 +306,6 @@ router.get('/shipping-methods', async (req, res) => {
   }
 });
 
-// @route   POST /api/checkout/apply-coupon
-// @desc    Apply coupon code
-// @access  Public
 router.post('/apply-coupon', optionalAuth, async (req, res) => {
   try {
     const { couponCode } = req.body;
@@ -327,7 +315,6 @@ router.post('/apply-coupon', optionalAuth, async (req, res) => {
       return res.status(400).json({ message: 'Coupon code is required' });
     }
 
-    // This is a placeholder - in real implementation, you'd have a Coupon model
     const mockCoupons = {
       'SAVE10': { discount: 0.10, type: 'percentage', minOrder: 50 },
       'WELCOME5': { discount: 5, type: 'fixed', minOrder: 0 },
@@ -335,12 +322,11 @@ router.post('/apply-coupon', optionalAuth, async (req, res) => {
     };
 
     const coupon = mockCoupons[couponCode.toUpperCase()];
-    
+
     if (!coupon) {
       return res.status(404).json({ message: 'Invalid coupon code' });
     }
 
-    // Get cart total
     let cart;
     if (req.user) {
       cart = await Cart.findOne({ user: req.user._id });
@@ -353,8 +339,8 @@ router.post('/apply-coupon', optionalAuth, async (req, res) => {
     }
 
     if (cart.subtotal < coupon.minOrder) {
-      return res.status(400).json({ 
-        message: `Minimum order of $${coupon.minOrder} required for this coupon` 
+      return res.status(400).json({
+        message: `Minimum order of $${coupon.minOrder} required for this coupon`
       });
     }
 

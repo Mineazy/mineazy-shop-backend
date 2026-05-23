@@ -10,7 +10,7 @@ const auth = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select('-password');
+    const user = await User.findById(decoded.id);
     
     if (!user) {
       return res.status(401).json({ message: 'Token is not valid' });
@@ -20,6 +20,7 @@ const auth = async (req, res, next) => {
       return res.status(403).json({ message: 'Account is deactivated. Please contact support.' });
     }
 
+    delete user.password;
     req.user = user;
     next();
   } catch (error) {
@@ -34,12 +35,13 @@ const optionalAuth = async (req, res, next) => {
     
     if (token) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select('-password');
+      const user = await User.findById(decoded.id);
       if (user) {
         if (user.isActive === false) {
           return res.status(403).json({ message: 'Account is deactivated. Please contact support.' });
         }
 
+        delete user.password;
         req.user = user;
       }
     }

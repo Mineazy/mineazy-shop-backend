@@ -1,13 +1,14 @@
 ﻿const express = require('express');
 const BlogPost = require('../models/BlogPost');
 const BlogCategory = require('../models/BlogCategory');
+const User = require('../models/User');
+const MongoShim = require('../utils/mongoshim');
 const { auth, authorize } = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
 
 const router = express.Router();
 
-// Configure multer for blog images - Updated for Multer 2.x
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, 'uploads/blog/');
@@ -17,17 +18,17 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage,
-  limits: { 
+  limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5242880,
-    files: 1 // Only one featured image per blog post
+    files: 1
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif|webp/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
-    
+
     if (mimetype && extname) {
       return cb(null, true);
     } else {
@@ -36,10 +37,7 @@ const upload = multer({
   }
 });
 
-// @route   GET /api/blog/posts
-// @desc    Get blog posts with pagination
-// @access  Public
-router.get('/posts', async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const {
       page = 1,
@@ -69,11 +67,12 @@ router.get('/posts', async (req, res) => {
     const skip = (pageNum - 1) * limitNum;
 
     const posts = await BlogPost.find(query)
-      .populate('author', 'firstName lastName')
-      .populate('category', 'name slug')
       .sort({ publishedAt: -1, createdAt: -1 })
       .skip(skip)
       .limit(limitNum);
+
+    await MongoShim.populate(posts, 'author', User, 'firstName lastName');
+    await MongoShim.populate(posts, 'category', BlogCategory, 'name slug');
 
     const total = await BlogPost.countDocuments(query);
 
@@ -90,47 +89,17 @@ router.get('/posts', async (req, res) => {
   }
 });
 
-// @route   GET /api/blog/posts/:slug
-// @desc    Get single blog post by slug
-// @access  Public
-router.get('/posts/:slug', async (req, res) => {
+router.get('/related/:slug', async (req, res) => {
   try {
-    const post = await BlogPost.findOne({ 
-      slug: req.params.slug, 
-      status: 'published' 
-    })
-      .populate('author', 'firstName lastName')
-      .populate('category', 'name slug');
-
-    if (!post) {
-      return res.status(404).json({ message: 'Post not found' });
-    }
-
-    // Increment view count
-    post.viewCount += 1;
-    await post.save();
-
-    res.json(post);
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-// @route   GET /api/blog/posts/related/:slug
-// @desc    Get related blog posts
-// @access  Public
-router.get('/posts/related/:slug', async (req, res) => {
-  try {
-    const post = await BlogPost.findOne({ 
-      slug: req.params.slug, 
-      status: 'published' 
+    const post = await BlogPost.findOne({
+      slug: req.params.slug,
+      status: 'published'
     });
 
     if (!post) {
       return res.status(404).json({ message: 'Post not found' });
     }
 
-    // Find related posts based on tags or category
     const relatedPosts = await BlogPost.find({
       _id: { $ne: post._id },
       status: 'published',
@@ -139,10 +108,11 @@ router.get('/posts/related/:slug', async (req, res) => {
         { tags: { $in: post.tags } }
       ]
     })
-    .populate('author', 'firstName lastName')
-    .populate('category', 'name slug')
     .sort({ publishedAt: -1 })
     .limit(4);
+
+    await MongoShim.populate(relatedPosts, 'author', User, 'firstName lastName');
+    await MongoShim.populate(relatedPosts, 'category', BlogCategory, 'name slug');
 
     res.json(relatedPosts);
   } catch (error) {
@@ -150,10 +120,32 @@ router.get('/posts/related/:slug', async (req, res) => {
   }
 });
 
-// @route   POST /api/blog/posts
-// @desc    Create blog post
-// @access  Private (Content Manager only)
-router.post('/posts', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
+router.get('/:slug', async (req, res) => {
+  try {
+    const post = await BlogPost.findOne({
+      slug: req.params.slug,
+      status: 'published'
+    });
+
+    if (post) {
+      await MongoShim.populate(post, 'author', User, 'firstName lastName');
+      await MongoShim.populate(post, 'category', BlogCategory, 'name slug');
+    }
+
+    if (!post) {
+      return res.status(404).json({ message: 'Post not found' });
+    }
+
+    post.viewCount += 1;
+    await BlogPost.update({ _id: post._id }, post);
+
+    res.json(post);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.post('/', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
   try {
     const {
       title,
@@ -182,11 +174,10 @@ router.post('/posts', auth, authorize('content_manager', 'super_admin'), upload.
       postData.publishedAt = new Date();
     }
 
-    const post = new BlogPost(postData);
-    await post.save();
+    const post = await BlogPost.insert(postData);
 
-    await post.populate('author', 'firstName lastName');
-    await post.populate('category', 'name slug');
+    await MongoShim.populate(post, 'author', User, 'firstName lastName');
+    await MongoShim.populate(post, 'category', BlogCategory, 'name slug');
 
     res.status(201).json({
       message: 'Blog post created successfully',
@@ -197,10 +188,7 @@ router.post('/posts', auth, authorize('content_manager', 'super_admin'), upload.
   }
 });
 
-// @route   PUT /api/blog/posts/:id
-// @desc    Update blog post
-// @access  Private (Content Manager only)
-router.put('/posts/:id', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
+router.put('/:id', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
   try {
     const {
       title,
@@ -233,10 +221,10 @@ router.put('/posts/:id', auth, authorize('content_manager', 'super_admin'), uplo
       post.featuredImage = `/uploads/blog/${req.file.filename}`;
     }
 
-    await post.save();
+    await BlogPost.update({ _id: post._id }, post);
 
-    await post.populate('author', 'firstName lastName');
-    await post.populate('category', 'name slug');
+    await MongoShim.populate(post, 'author', User, 'firstName lastName');
+    await MongoShim.populate(post, 'category', BlogCategory, 'name slug');
 
     res.json({
       message: 'Blog post updated successfully',
@@ -247,10 +235,7 @@ router.put('/posts/:id', auth, authorize('content_manager', 'super_admin'), uplo
   }
 });
 
-// @route   DELETE /api/blog/posts/:id
-// @desc    Delete blog post
-// @access  Private (Content Manager only)
-router.delete('/posts/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
+router.delete('/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
     const post = await BlogPost.findById(req.params.id);
     if (!post) {
@@ -265,24 +250,18 @@ router.delete('/posts/:id', auth, authorize('content_manager', 'super_admin'), a
   }
 });
 
-// Blog Categories Routes
-
-// @route   GET /api/blog/categories
-// @desc    Get blog categories
-// @access  Public
 router.get('/categories', async (req, res) => {
   try {
     const categories = await BlogCategory.find().sort({ name: 1 });
 
-    // Add post count for each category
     const categoriesWithCount = await Promise.all(
       categories.map(async (category) => {
-        const postCount = await BlogPost.countDocuments({ 
-          category: category._id, 
-          status: 'published' 
+        const postCount = await BlogPost.countDocuments({
+          category: category._id,
+          status: 'published'
         });
         return {
-          ...category.toObject(),
+          ...category,
           postCount
         };
       })
@@ -294,9 +273,6 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-// @route   POST /api/blog/categories
-// @desc    Create blog category
-// @access  Private (Content Manager only)
 router.post('/categories', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
     const { name, description } = req.body;
@@ -305,28 +281,20 @@ router.post('/categories', auth, authorize('content_manager', 'super_admin'), as
       return res.status(400).json({ message: 'Category name is required' });
     }
 
-    const category = new BlogCategory({
+    const category = await BlogCategory.insert({
       name,
       description
     });
-
-    await category.save();
 
     res.status(201).json({
       message: 'Blog category created successfully',
       category
     });
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({ message: 'Category name already exists' });
-    }
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// @route   PUT /api/blog/categories/:id
-// @desc    Update blog category
-// @access  Private (Content Manager only)
 router.put('/categories/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
     const { name, description } = req.body;
@@ -339,7 +307,7 @@ router.put('/categories/:id', auth, authorize('content_manager', 'super_admin'),
     category.name = name || category.name;
     category.description = description || category.description;
 
-    await category.save();
+    await BlogCategory.update({ _id: category._id }, category);
 
     res.json({
       message: 'Blog category updated successfully',
@@ -350,9 +318,6 @@ router.put('/categories/:id', auth, authorize('content_manager', 'super_admin'),
   }
 });
 
-// @route   DELETE /api/blog/categories/:id
-// @desc    Delete blog category
-// @access  Private (Content Manager only)
 router.delete('/categories/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
     const category = await BlogCategory.findById(req.params.id);
@@ -360,11 +325,10 @@ router.delete('/categories/:id', auth, authorize('content_manager', 'super_admin
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    // Check if category is used by any posts
     const postsCount = await BlogPost.countDocuments({ category: req.params.id });
     if (postsCount > 0) {
-      return res.status(400).json({ 
-        message: 'Cannot delete category that is used by blog posts' 
+      return res.status(400).json({
+        message: 'Cannot delete category that is used by blog posts'
       });
     }
 
@@ -376,9 +340,6 @@ router.delete('/categories/:id', auth, authorize('content_manager', 'super_admin
   }
 });
 
-// @route   GET /api/blog/tags
-// @desc    Get popular blog tags
-// @access  Public
 router.get('/tags', async (req, res) => {
   try {
     const tags = await BlogPost.aggregate([
@@ -398,18 +359,16 @@ router.get('/tags', async (req, res) => {
   }
 });
 
-// @route   GET /api/blog/featured
-// @desc    Get featured/popular blog posts
-// @access  Public
 router.get('/featured', async (req, res) => {
   try {
-    const featuredPosts = await BlogPost.find({ 
-      status: 'published' 
+    const featuredPosts = await BlogPost.find({
+      status: 'published'
     })
-    .populate('author', 'firstName lastName')
-    .populate('category', 'name slug')
     .sort({ viewCount: -1 })
     .limit(5);
+
+    await MongoShim.populate(featuredPosts, 'author', User, 'firstName lastName');
+    await MongoShim.populate(featuredPosts, 'category', BlogCategory, 'name slug');
 
     res.json(featuredPosts);
   } catch (error) {
@@ -417,9 +376,6 @@ router.get('/featured', async (req, res) => {
   }
 });
 
-// @route   GET /api/blog/archive
-// @desc    Get blog archive by month/year
-// @access  Public
 router.get('/archive', async (req, res) => {
   try {
     const archive = await BlogPost.aggregate([

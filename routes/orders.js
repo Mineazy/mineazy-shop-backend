@@ -2,6 +2,7 @@
 const Order = require('../models/Order');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
+const MongoShim = require('../utils/mongoshim');
 const { auth, optionalAuth, authorize } = require('../middleware/auth');
 const { orderValidation } = require('../middleware/validation');
 const { sendOrderConfirmationWithInvoice } = require('../utils/orderEmailService');
@@ -28,9 +29,6 @@ const getCustomerOrderQuery = (user) => {
   return query;
 };
 
-// @route   POST /api/orders
-// @desc    Create order
-// @access  Public (with optional auth)
 router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
   try {
     const {
@@ -40,25 +38,23 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
       sessionId
     } = req.body;
 
-    // Get cart
     let cart;
     if (req.user) {
-      cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+      cart = await Cart.findOne({ user: req.user._id });
     } else {
-      cart = await Cart.findOne({ sessionId }).populate('items.product');
+      cart = await Cart.findOne({ sessionId });
     }
 
-    if (!cart || cart.items.length === 0) {
+    if (!cart || !cart.items || cart.items.length === 0) {
       return res.status(400).json({ message: 'Cart is empty' });
     }
 
-    // Calculate totals
     let subtotal = 0;
     const orderItems = [];
 
     for (const item of cart.items) {
-      const product = await Product.findById(item.product._id);
-      
+      const product = await Product.findById(item.product);
+
       if (!product.inStock || product.stockQuantity < item.quantity) {
         return res.status(400).json({
           message: `Insufficient stock for ${product.name}`
@@ -69,7 +65,7 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
       subtotal += itemTotal;
 
       orderItems.push({
-        product: item.product._id,
+        product: item.product,
         name: product.name,
         sku: product.sku,
         quantity: item.quantity,
@@ -77,9 +73,8 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
         total: itemTotal
       });
 
-      // Update product stock
       product.stockQuantity -= item.quantity;
-      await product.save();
+      await Product.update({ _id: product._id }, product);
     }
 
     const tax = subtotal * 0.155;
@@ -97,7 +92,6 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
       notes
     };
 
-    // Set payment status based on method
     switch (paymentMethod) {
       case 'cash_on_delivery':
         orderData.paymentStatus = 'payment_on_delivery';
@@ -112,18 +106,14 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
         orderData.paymentStatus = 'pending';
     }
 
-    const order = new Order(orderData);
-    await order.save();
+    const order = await Order.insert(orderData);
 
-    // Clear cart
     if (req.user) {
       await Cart.findOneAndDelete({ user: req.user._id });
     } else {
       await Cart.findOneAndDelete({ sessionId });
     }
 
-    // Send confirmation email only for non-Paynow orders
-    // For Paynow, we send email after successful payment
     if (paymentMethod !== 'paynow') {
       try {
         await sendOrderConfirmationWithInvoice(order);
@@ -140,7 +130,6 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
       email: order.customerInfo.email
     });
 
-    // IMPORTANT: Return complete info for guest users
     res.status(201).json({
       message: 'Order created successfully',
       order: {
@@ -163,9 +152,7 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
-// @route   GET /api/orders/guest/:orderId
-// @desc    Get guest order by ID and email
-// @access  Public (with email verification)
+
 router.get('/guest/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -181,7 +168,11 @@ router.get('/guest/:orderId', async (req, res) => {
       _id: orderId,
       'customerInfo.email': email,
       isGuest: true
-    }).populate('items.product', 'name images sku');
+    });
+
+    if (order) {
+      await MongoShim.populate(order, 'items.product', Product, 'name images sku');
+    }
 
     if (!order) {
       console.log('Γ¥î Order not found or email mismatch');
@@ -200,16 +191,12 @@ router.get('/guest/:orderId', async (req, res) => {
   }
 });
 
-// @route   GET /api/orders
-// @desc    Get user's orders (ONLY THEIR OWN ORDERS)
-// @access  Private
 router.get('/', auth, async (req, res) => {
   try {
     const { page = 1, limit = 10, status } = req.query;
 
-    // Regular users see account orders plus verified guest orders placed with their account email.
     const query = getCustomerOrderQuery(req.user);
-    
+
     if (status) {
       query.$and = [...(query.$and || []), { status }];
     }
@@ -221,8 +208,9 @@ router.get('/', auth, async (req, res) => {
     const orders = await Order.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limitNum)
-      .populate('items.product', 'name images');
+      .limit(limitNum);
+
+    await MongoShim.populate(orders, 'items.product', Product, 'name images');
 
     const total = await Order.countDocuments(query);
 
@@ -239,9 +227,6 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// @route   GET /api/orders/:id
-// @desc    Get single order
-// @access  Private
 router.get('/:id', auth, async (req, res) => {
   try {
     const order = await Order.findOne({
@@ -249,7 +234,11 @@ router.get('/:id', auth, async (req, res) => {
         { _id: req.params.id },
         getCustomerOrderQuery(req.user)
       ]
-    }).populate('items.product', 'name images sku');
+    });
+
+    if (order) {
+      await MongoShim.populate(order, 'items.product', Product, 'name images sku');
+    }
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
@@ -261,9 +250,6 @@ router.get('/:id', auth, async (req, res) => {
   }
 });
 
-// @route   GET /api/orders/track/:orderNumber/:email
-// @desc    Track order (for guests)
-// @access  Public
 router.get('/track/:orderNumber/:email', async (req, res) => {
   try {
     const { orderNumber, email } = req.params;
@@ -271,13 +257,16 @@ router.get('/track/:orderNumber/:email', async (req, res) => {
     const order = await Order.findOne({
       orderNumber,
       'customerInfo.email': email
-    }).populate('items.product', 'name images');
+    });
+
+    if (order) {
+      await MongoShim.populate(order, 'items.product', Product, 'name images');
+    }
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    // Only return essential tracking information
     const trackingInfo = {
       orderNumber: order.orderNumber,
       status: order.status,
@@ -298,9 +287,6 @@ router.get('/track/:orderNumber/:email', async (req, res) => {
   }
 });
 
-// @route   PUT /api/orders/:id
-// @desc    Update order status (Admin only)
-// @access  Private (Admin only)
 router.put('/:id', auth, authorize('order_manager', 'super_admin'), async (req, res) => {
   try {
     const { status, paymentStatus, trackingNumber, notes } = req.body;
@@ -310,7 +296,6 @@ router.put('/:id', auth, authorize('order_manager', 'super_admin'), async (req, 
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    // Store old status for email notification
     const oldStatus = order.status;
 
     if (status) order.status = status;
@@ -318,9 +303,8 @@ router.put('/:id', auth, authorize('order_manager', 'super_admin'), async (req, 
     if (trackingNumber) order.trackingNumber = trackingNumber;
     if (notes !== undefined) order.notes = notes;
 
-    await order.save();
+    await Order.update({ _id: order._id }, order);
 
-    // Send status update email if status changed
     if (status && status !== oldStatus) {
       try {
         const emailService = require('../utils/emailService');
@@ -339,9 +323,6 @@ router.put('/:id', auth, authorize('order_manager', 'super_admin'), async (req, 
   }
 });
 
-// @route   DELETE /api/orders/:id
-// @desc    Cancel order (User can only cancel their own orders)
-// @access  Private
 router.delete('/:id', auth, async (req, res) => {
   try {
     const order = await Order.findOne({
@@ -358,14 +339,13 @@ router.delete('/:id', auth, async (req, res) => {
     }
 
     order.status = 'cancelled';
-    await order.save();
+    await Order.update({ _id: order._id }, order);
 
-    // Restore product stock
     for (const item of order.items) {
       const product = await Product.findById(item.product);
       if (product) {
         product.stockQuantity += item.quantity;
-        await product.save();
+        await Product.update({ _id: product._id }, product);
       }
     }
 
@@ -375,33 +355,30 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
-// @route   GET /api/orders/user/stats
-// @desc    Get user's order statistics
-// @access  Private
 router.get('/user/stats', auth, async (req, res) => {
   try {
     const totalOrders = await Order.countDocuments({ user: req.user._id });
-    const pendingOrders = await Order.countDocuments({ 
-      user: req.user._id, 
-      status: 'pending' 
+    const pendingOrders = await Order.countDocuments({
+      user: req.user._id,
+      status: 'pending'
     });
-    const completedOrders = await Order.countDocuments({ 
-      user: req.user._id, 
-      status: 'delivered' 
+    const completedOrders = await Order.countDocuments({
+      user: req.user._id,
+      status: 'delivered'
     });
 
     const totalSpent = await Order.aggregate([
-      { 
-        $match: { 
-          user: req.user._id, 
-          paymentStatus: 'paid' 
-        } 
+      {
+        $match: {
+          user: req.user._id,
+          paymentStatus: 'paid'
+        }
       },
-      { 
-        $group: { 
-          _id: null, 
-          total: { $sum: '$total' } 
-        } 
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$total' }
+        }
       }
     ]);
 

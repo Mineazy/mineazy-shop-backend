@@ -5,6 +5,7 @@ const { auth, authorize } = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
 const { body, validationResult } = require('express-validator');
+const MongoShim = require('../utils/mongoshim');
 
 const router = express.Router();
 
@@ -65,17 +66,14 @@ router.get('/', async (req, res) => {
       query.isActive = true;
     }
 
-    let categoriesQuery = Category.find(query).sort({ sortOrder: 1, name: 1 });
+    const categories = await Category.find(query).sort({ sortOrder: 1, name: 1 });
 
     if (includeProducts === 'true') {
-      categoriesQuery = categoriesQuery.populate({
-        path: 'products',
-        match: { isActive: true },
-        select: 'name slug price images featured'
-      });
+      for (const category of categories) {
+        const products = await Product.find({ category: category._id, isActive: true });
+        category.products = products;
+      }
     }
-
-    const categories = await categoriesQuery.exec();
 
     // Build category tree (nested categories)
     const categoryTree = buildCategoryTree(categories);
@@ -94,8 +92,10 @@ router.get('/', async (req, res) => {
 // @access  Public
 router.get('/:id', async (req, res) => {
   try {
-    const category = await Category.findById(req.params.id)
-      .populate('parent', 'name slug');
+    const category = await Category.findById(req.params.id);
+    if (category) {
+      await MongoShim.populate(category, 'parent', Category, 'name slug');
+    }
 
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
@@ -105,13 +105,13 @@ router.get('/:id', async (req, res) => {
     const products = await Product.find({ 
       category: category._id, 
       isActive: true 
-    }).select('name slug price images featured stockQuantity').limit(12);
+    }).limit(12);
 
     // Get subcategories
     const subcategories = await Category.find({ 
       parent: category._id, 
       isActive: true 
-    }).select('name slug image');
+    });
 
     res.json({
       category,
@@ -132,7 +132,10 @@ router.get('/slug/:slug', async (req, res) => {
     const category = await Category.findOne({ 
       slug: req.params.slug, 
       isActive: true 
-    }).populate('parent', 'name slug');
+    });
+    if (category) {
+      await MongoShim.populate(category, 'parent', Category, 'name slug');
+    }
 
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
@@ -154,8 +157,8 @@ router.get('/slug/:slug', async (req, res) => {
     })
     .sort(sort)
     .skip(skip)
-    .limit(limitNum)
-    .populate('category', 'name slug');
+    .limit(limitNum);
+    await MongoShim.populate(products, 'category', Category, 'name slug');
 
     const totalProducts = await Product.countDocuments({ 
       category: category._id, 
@@ -166,7 +169,7 @@ router.get('/slug/:slug', async (req, res) => {
     const subcategories = await Category.find({ 
       parent: category._id, 
       isActive: true 
-    }).select('name slug image');
+    });
 
     res.json({
       category,
@@ -209,19 +212,15 @@ router.post('/', auth, authorize('inventory_manager', 'super_admin'), upload.sin
       categoryData.image = `/uploads/categories/${req.file.filename}`;
     }
 
-    const category = new Category(categoryData);
-    await category.save();
+    const category = await Category.insert(categoryData);
 
-    await category.populate('parent', 'name slug');
+    await MongoShim.populate(category, 'parent', Category, 'name slug');
 
     res.status(201).json({
       message: 'Category created successfully',
       category
     });
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({ message: 'Category name already exists' });
-    }
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
@@ -262,8 +261,8 @@ router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.s
       category.image = `/uploads/categories/${req.file.filename}`;
     }
 
-    await category.save();
-    await category.populate('parent', 'name slug');
+    await Category.update({ _id: category._id }, category);
+    await MongoShim.populate(category, 'parent', Category, 'name slug');
 
     res.json({
       message: 'Category updated successfully',
@@ -332,7 +331,7 @@ function buildCategoryTree(categories) {
   // Create a map of categories
   categories.forEach(category => {
     categoryMap[category._id] = {
-      ...category.toObject(),
+      ...category,
       children: []
     };
   });

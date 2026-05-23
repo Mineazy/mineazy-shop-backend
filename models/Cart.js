@@ -1,64 +1,20 @@
-﻿const mongoose = require('mongoose');
+﻿const MongoShim = require('../utils/mongoshim');
 
-const cartSchema = new mongoose.Schema({
-  user: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    sparse: true
+const Cart = new MongoShim('carts', {
+  timestamps: true,
+  fields: {
+    items: { default: [] },
+    totalItems: { default: 0 },
+    subtotal: { default: 0 },
+    isGuest: { default: false }
   },
-  sessionId: {
-    type: String,
-    sparse: true
-  },
-  items: [{
-    product: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Product',
-      required: true
-    },
-    quantity: {
-      type: Number,
-      required: true,
-      min: 1
-    },
-    price: {
-      type: Number,
-      required: true
-    },
-    addedAt: {
-      type: Date,
-      default: Date.now
+  preSave: (doc, isNew) => {
+    if (!doc.user && !doc.sessionId) {
+      throw new Error('Either user or sessionId must be provided');
     }
-  }],
-  totalItems: {
-    type: Number,
-    default: 0
-  },
-  subtotal: {
-    type: Number,
-    default: 0
-  },
-  isGuest: {
-    type: Boolean,
-    default: false
+    doc.totalItems = (doc.items || []).reduce((total, item) => total + item.quantity, 0);
+    doc.subtotal = (doc.items || []).reduce((total, item) => total + (item.price * item.quantity), 0);
   }
-}, {
-  timestamps: true
 });
 
-// Calculate totals before saving
-cartSchema.pre('save', function(next) {
-  this.totalItems = this.items.reduce((total, item) => total + item.quantity, 0);
-  this.subtotal = this.items.reduce((total, item) => total + (item.price * item.quantity), 0);
-  next();
-});
-
-// Ensure either user or sessionId is provided
-cartSchema.pre('save', function(next) {
-  if (!this.user && !this.sessionId) {
-    return next(new Error('Either user or sessionId must be provided'));
-  }
-  next();
-});
-
-module.exports = mongoose.model('Cart', cartSchema);
+module.exports = Cart;

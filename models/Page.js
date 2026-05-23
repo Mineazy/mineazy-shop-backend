@@ -1,41 +1,18 @@
-﻿const mongoose = require('mongoose');
-const slugify = require('slugify');
+﻿const slugify = require('slugify');
+const MongoShim = require('../utils/mongoshim');
 
-const pageSchema = new mongoose.Schema({
-  title: {
-    type: String,
-    required: true,
-    trim: true
+const Page = new MongoShim('pages', {
+  timestamps: true,
+  fields: {
+    title: { default: '' },
+    content: { default: '' },
+    isPublished: { default: true }
   },
-  slug: {
-    type: String,
-    unique: true
-  },
-  content: {
-    type: String,
-    required: true
-  },
-  metaTitle: String,
-  metaDescription: String,
-  isPublished: {
-    type: Boolean,
-    default: true
-  },
-  author: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+  preSave: (doc, isNew) => {
+    if (doc.title && !doc.slug) {
+      doc.slug = slugify(doc.title, { lower: true });
+    }
   }
-}, {
-  timestamps: true
 });
 
-// Generate slug before saving
-pageSchema.pre('save', function(next) {
-  if (this.isModified('title')) {
-    this.slug = slugify(this.title, { lower: true });
-  }
-  next();
-});
-
-module.exports = mongoose.model('Page', pageSchema);
+module.exports = Page;

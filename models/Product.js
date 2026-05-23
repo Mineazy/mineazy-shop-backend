@@ -1,107 +1,29 @@
-﻿const mongoose = require('mongoose');
-const slugify = require('slugify');
+﻿const slugify = require('slugify');
+const MongoShim = require('../utils/mongoshim');
 
-const productSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-    trim: true
+const Product = new MongoShim('products', {
+  timestamps: true,
+  fields: {
+    name: { default: '' },
+    description: { default: '' },
+    price: { default: 0 },
+    sku: { default: '' },
+    category: { default: null },
+    inStock: { default: true },
+    stockQuantity: { default: 0 },
+    isActive: { default: true },
+    featured: { default: false },
+    viewCount: { default: 0 }
   },
-  slug: {
-    type: String,
-    unique: true
-  },
-  description: {
-    type: String,
-    required: true
-  },
-  shortDescription: {
-    type: String,
-    maxlength: 200
-  },
-  price: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-  salePrice: {
-    type: Number,
-    min: 0
-  },
-  sku: {
-    type: String,
-    required: true,
-    unique: true,
-    uppercase: true
-  },
-  category: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Category',
-    required: true
-  },
-  images: [{
-    type: String
-  }],
-  specifications: {
-    type: Map,
-    of: String
-  },
-  inStock: {
-    type: Boolean,
-    default: true
-  },
-  stockQuantity: {
-    type: Number,
-    default: 0,
-    min: 0
-  },
-  weight: {
-    type: Number,
-    min: 0
-  },
-  dimensions: {
-    length: Number,
-    width: Number,
-    height: Number
-  },
-  tags: [{
-    type: String,
-    trim: true
-  }],
-  isActive: {
-    type: Boolean,
-    default: true
-  },
-  featured: {
-    type: Boolean,
-    default: false
-  },
-  viewCount: {
-    type: Number,
-    default: 0
+  preSave: (doc, isNew) => {
+    if (doc.name && !doc.slug) {
+      doc.slug = slugify(doc.name, { lower: true });
+    }
   }
-}, {
-  timestamps: true
 });
 
-// Generate slug before saving
-productSchema.pre('save', function(next) {
-  if (this.isModified('name')) {
-    this.slug = slugify(this.name, { lower: true });
-  }
-  next();
-});
+Product.effectivePrice = function (doc) {
+  return doc.salePrice && doc.salePrice < doc.price ? doc.salePrice : doc.price;
+};
 
-// Virtual for effective price
-productSchema.virtual('effectivePrice').get(function() {
-  return this.salePrice && this.salePrice < this.price ? this.salePrice : this.price;
-});
-
-// Text search index
-productSchema.index({ 
-  name: 'text', 
-  description: 'text', 
-  tags: 'text' 
-});
-
-module.exports = mongoose.model('Product', productSchema);
+module.exports = Product;

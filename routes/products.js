@@ -9,6 +9,7 @@ const path = require('path');
 const csvImporter = require('../utils/csvImporter');
 const fs = require('fs');
 const { sanitizeProductRecord, sanitizeProductImages } = require('../utils/productImageUtils');
+const MongoShim = require('../utils/mongoshim');
 
 const router = express.Router();
 const MAX_BULK_IMAGE_FILES = 20;
@@ -37,7 +38,7 @@ const isValidImageUrl = (value) => {
   }
 };
 
-// Waterfall storage: Supabase ΓåÆ Cloudinary ΓåÆ local disk
+// Waterfall storage: Supabase → Cloudinary → local disk
 const cloudinaryService = require('../utils/cloudinaryService');
 const { uploadImage: waterfallUpload, uploadProductImages, uploadProductImagesBulk } = cloudinaryService;
 const upload = uploadProductImages; // memory-storage multer, feed buffer to waterfallUpload
@@ -237,11 +238,10 @@ router.get('/', async (req, res) => {
 
     // Execute query
     const products = await Product.find(query)
-      .populate('category', 'name slug')
       .sort(sort)
       .skip(skip)
-      .limit(limitNum)
-      .lean();
+      .limit(limitNum);
+    await MongoShim.populate(products, 'category', Category, 'name slug');
 
     const total = await Product.countDocuments(query);
 
@@ -290,9 +290,8 @@ router.get('/search', async (req, res) => {
       });
     }
 
-    const products = await Product.find(query)
-      .populate('category', 'name slug')
-      .limit(20);
+    const products = await Product.find(query).limit(20);
+    await MongoShim.populate(products, 'category', Category, 'name slug');
 
     res.json(products.map(sanitizeProductRecord));
   } catch (error) {
@@ -333,9 +332,8 @@ router.get('/export', auth, authorize('inventory_manager', 'super_admin'), async
 
     const query = buildAdminProductQuery(req.query);
     const products = await Product.find(query)
-      .populate('category', 'name slug')
-      .sort({ createdAt: -1 })
-      .lean();
+      .sort({ createdAt: -1 });
+    await MongoShim.populate(products, 'category', Category, 'name slug');
 
     const rows = [
       fields.map(escapeCsvValue).join(','),
@@ -363,8 +361,10 @@ router.get('/export', auth, authorize('inventory_manager', 'super_admin'), async
 // @access  Public
 router.get('/:id', async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id)
-      .populate('category', 'name slug');
+    const product = await Product.findById(req.params.id);
+    if (product) {
+      await MongoShim.populate(product, 'category', Category, 'name slug');
+    }
 
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
@@ -372,7 +372,7 @@ router.get('/:id', async (req, res) => {
 
     // Increment view count
     product.viewCount += 1;
-    await product.save();
+    await Product.update({ _id: product._id }, product);
 
     res.json(sanitizeProductRecord(product));
   } catch (error) {
@@ -394,9 +394,8 @@ router.get('/:id/related', async (req, res) => {
       _id: { $ne: product._id },
       category: product.category,
       isActive: true
-    })
-    .populate('category', 'name slug')
-    .limit(4);
+    }).limit(4);
+    await MongoShim.populate(relatedProducts, 'category', Category, 'name slug');
 
     res.json(relatedProducts.map(sanitizeProductRecord));
   } catch (error) {
@@ -435,19 +434,18 @@ router.post('/', auth, authorize('inventory_manager', 'super_admin'), upload.arr
       specifications: specifications ? JSON.parse(specifications) : {}
     };
 
-    // Upload images through waterfall: Supabase ΓåÆ Cloudinary ΓåÆ local
+    // Upload images through waterfall: Supabase → Cloudinary → local
     if (req.files && req.files.length > 0) {
       const results = await Promise.all(
         req.files.map(file => waterfallUpload(file.buffer, file.originalname, 'products'))
       );
       productData.images = sanitizeProductImages(results.map(r => r.url));
-      console.log('≡ƒô╕ Images stored:', productData.images);
+      console.log('📸 Images stored:', productData.images);
     }
 
-    const product = new Product(productData);
-    await product.save();
+    const product = await Product.insert(productData);
 
-    await product.populate('category', 'name slug');
+    await MongoShim.populate(product, 'category', Category, 'name slug');
 
     res.status(201).json({
       message: 'Product created successfully',
@@ -456,9 +454,6 @@ router.post('/', auth, authorize('inventory_manager', 'super_admin'), upload.arr
     });
   } catch (error) {
     console.error('Product creation error:', error);
-    if (error.code === 11000) {
-      return res.status(400).json({ message: 'SKU already exists' });
-    }
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
@@ -514,7 +509,7 @@ router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.a
             const matches = imageUrl.match(/upload\/(?:v\d+\/)?(.*?)(?:\.[^.]+)?$/);
             if (matches && matches[1]) {
               await cloudinaryService.deleteImage(matches[1]);
-              console.log('≡ƒùæ∩╕Å Deleted from Cloudinary:', matches[1]);
+              console.log('🗑️ Deleted from Cloudinary:', matches[1]);
             }
           } catch (error) {
             console.error('Error deleting image from Cloudinary:', error);
@@ -530,7 +525,7 @@ router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.a
       ? [externalImageUrl.trim()]
       : [];
 
-    // Upload new images through waterfall: Supabase ΓåÆ Cloudinary ΓåÆ local
+    // Upload new images through waterfall: Supabase → Cloudinary → local
     if (req.files && req.files.length > 0) {
       const results = await Promise.all(
         req.files.map(file => waterfallUpload(file.buffer, file.originalname, 'products'))
@@ -539,7 +534,7 @@ router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.a
         ...(Array.isArray(product.images) ? product.images : []),
         ...results.map(r => r.url)
       ]);
-      console.log('≡ƒô╕ New images stored:', results.map(r => r.url));
+      console.log('📸 New images stored:', results.map(r => r.url));
     }
 
     if (selectedExistingUrls.length > 0 || externalUrls.length > 0) {
@@ -550,8 +545,8 @@ router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.a
       ]);
     }
 
-    await product.save();
-    await product.populate('category', 'name slug');
+    await Product.update({ _id: product._id }, product);
+    await MongoShim.populate(product, 'category', Category, 'name slug');
 
     res.json({
       message: 'Product updated successfully',
@@ -577,7 +572,7 @@ router.delete('/:id', auth, authorize('inventory_manager', 'super_admin'), async
     // If using Cloudinary, delete images from cloud
     if (USE_CLOUDINARY && product.images.length > 0) {
       const cloudinaryService = require('../utils/cloudinaryService');
-      console.log('≡ƒùæ∩╕Å Deleting Cloudinary images for product:', product.name);
+      console.log('🗑️ Deleting Cloudinary images for product:', product.name);
       
       for (const imageUrl of product.images) {
         try {
@@ -585,7 +580,7 @@ router.delete('/:id', auth, authorize('inventory_manager', 'super_admin'), async
           const matches = imageUrl.match(/upload\/(?:v\d+\/)?(.*?)(?:\.[^.]+)?$/);
           if (matches && matches[1]) {
             await cloudinaryService.deleteImage(matches[1]);
-            console.log('Γ£à Deleted from Cloudinary:', matches[1]);
+            console.log('✅ Deleted from Cloudinary:', matches[1]);
           }
         } catch (error) {
           console.error('Error deleting image from Cloudinary:', error);
@@ -598,7 +593,7 @@ router.delete('/:id', auth, authorize('inventory_manager', 'super_admin'), async
           const fullPath = path.join(__dirname, '..', imagePath);
           if (fs.existsSync(fullPath)) {
             fs.unlinkSync(fullPath);
-            console.log('Γ£à Deleted local file:', imagePath);
+            console.log('✅ Deleted local file:', imagePath);
           }
         } catch (error) {
           console.error('Error deleting local file:', error);
@@ -637,7 +632,7 @@ router.post('/bulk-import', auth, authorize('inventory_manager', 'super_admin'),
       req.body.fieldsToUpdate.split(',').map(f => f.trim()) : 
       []; // Empty array = update all provided fields
 
-    console.log('≡ƒôè Processing CSV import with options:', {
+    console.log('📊 Processing CSV import with options:', {
       file: req.file.path,
       updateExisting,
       fieldsToUpdate: fieldsToUpdate.length ? fieldsToUpdate : 'all'
@@ -651,7 +646,7 @@ router.post('/bulk-import', auth, authorize('inventory_manager', 'super_admin'),
 
     // Clean up uploaded file
     fs.unlinkSync(req.file.path);
-    console.log('≡ƒº╣ Cleaned up CSV file');
+    console.log('🧹 Cleaned up CSV file');
 
     if (results.success) {
       const message = [];
@@ -723,7 +718,7 @@ router.get('/import/sample-update', auth, authorize('inventory_manager', 'super_
 
 // @route   POST /api/products/bulk-images
 // @desc    Bulk upload images and assign to products via filename mapping
-//          Storage waterfall: Supabase ΓåÆ Cloudinary ΓåÆ local disk
+//          Storage waterfall: Supabase → Cloudinary → local disk
 // @access  Private (inventory_manager, super_admin)
 router.post('/bulk-images', auth, authorize('inventory_manager', 'super_admin'), uploadProductImagesBulk.array('images', MAX_BULK_IMAGE_FILES), async (req, res) => {
   try {
@@ -754,7 +749,7 @@ router.post('/bulk-images', auth, authorize('inventory_manager', 'super_admin'),
         continue;
       }
 
-      // Run waterfall: Supabase ΓåÆ Cloudinary ΓåÆ local
+      // Run waterfall: Supabase → Cloudinary → local
       let imageUrl;
       try {
         const result = await waterfallUpload(file.buffer, originalName, 'products');
@@ -769,7 +764,7 @@ router.post('/bulk-images', auth, authorize('inventory_manager', 'super_admin'),
 
       for (const productId of productIds) {
         try {
-          const product = await Product.findById(productId).select('name images');
+          const product = await Product.findById(productId);
           if (!product) {
             throw new Error('Product not found');
           }
@@ -778,7 +773,7 @@ router.post('/bulk-images', auth, authorize('inventory_manager', 'super_admin'),
             ...(Array.isArray(product.images) ? product.images : []),
             imageUrl
           ]);
-          await product.save();
+          await Product.update({ _id: product._id }, product);
 
           if (!productsUpdated[productId]) {
             productsUpdated[productId] = {

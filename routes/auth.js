@@ -22,28 +22,22 @@ const getResetPasswordUrl = (resetToken) => {
   return `${getEmailUrl()}/reset-password/${encodeURIComponent(resetToken)}`;
 };
 
-// Generate JWT Token
 const generateToken = (userId) => {
   return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || '30d'
   });
 };
 
-// @route   POST /api/auth/register
-// @desc    Register new user
-// @access  Public
 router.post('/register', userValidation.register, async (req, res) => {
   try {
     const { email, password, firstName, lastName, phone, role = 'customer' } = req.body;
 
-    // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
-    // Create user
-    const user = new User({
+    const user = await User.insert({
       email,
       password,
       firstName,
@@ -53,9 +47,6 @@ router.post('/register', userValidation.register, async (req, res) => {
       verificationToken: crypto.randomBytes(32).toString('hex')
     });
 
-    await user.save();
-
-    // Send verification email
     try {
       const verificationUrl = getVerificationUrl(user.verificationToken);
       await emailService.sendEmail(
@@ -77,7 +68,6 @@ router.post('/register', userValidation.register, async (req, res) => {
       console.error('Failed to send verification email:', emailError);
     }
 
-    // Generate token
     const token = generateToken(user._id);
 
     res.status(201).json({
@@ -97,21 +87,16 @@ router.post('/register', userValidation.register, async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/login
-// @desc    Login user
-// @access  Public
 router.post('/login', userValidation.login, async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Find user by email
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    // Check password
-    const isPasswordValid = await user.comparePassword(password);
+    const isPasswordValid = await User.comparePassword(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -120,7 +105,6 @@ router.post('/login', userValidation.login, async (req, res) => {
       return res.status(403).json({ message: 'Account is deactivated. Please contact support.' });
     }
 
-    // Generate token
     const token = generateToken(user._id);
 
     res.json({
@@ -141,9 +125,6 @@ router.post('/login', userValidation.login, async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/verify-email
-// @desc    Verify email address
-// @access  Public
 router.post('/verify-email', async (req, res) => {
   try {
     const { token } = req.body;
@@ -155,7 +136,7 @@ router.post('/verify-email', async (req, res) => {
 
     user.isVerified = true;
     user.verificationToken = undefined;
-    await user.save();
+    await User.update({ _id: user._id }, user);
 
     res.json({ message: 'Email verified successfully' });
   } catch (error) {
@@ -163,9 +144,6 @@ router.post('/verify-email', async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/forgot-password
-// @desc    Request password reset
-// @access  Public
 router.post('/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -175,14 +153,12 @@ router.post('/forgot-password', async (req, res) => {
       return res.status(404).json({ message: 'User not found with this email' });
     }
 
-    // Generate reset token
     const resetToken = crypto.randomBytes(32).toString('hex');
     user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    user.resetPasswordExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    user.resetPasswordExpires = Date.now() + 10 * 60 * 1000;
 
-    await user.save();
+    await User.update({ _id: user._id }, user);
 
-    // Send reset email
     try {
       const resetUrl = getResetPasswordUrl(resetToken);
       await emailService.sendEmail(
@@ -212,9 +188,6 @@ router.post('/forgot-password', async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/reset-password
-// @desc    Reset password
-// @access  Public
 router.post('/reset-password', async (req, res) => {
   try {
     const { token, password } = req.body;
@@ -223,7 +196,6 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ message: 'Password must be at least 6 characters long' });
     }
 
-    // Hash the token to match stored version
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
 
     const user = await User.findOne({
@@ -235,14 +207,12 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ message: 'Invalid or expired reset token' });
     }
 
-    // Update password
-    user.password = password;
+    user.password = await bcrypt.hash(password, 12);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
 
-    await user.save();
+    await User.update({ _id: user._id }, user);
 
-    // Generate new token
     const newToken = generateToken(user._id);
 
     res.json({
@@ -262,9 +232,6 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/resend-verification
-// @desc    Resend verification email
-// @access  Private
 router.post('/resend-verification', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -273,11 +240,9 @@ router.post('/resend-verification', auth, async (req, res) => {
       return res.status(400).json({ message: 'Email is already verified' });
     }
 
-    // Generate new verification token
     user.verificationToken = crypto.randomBytes(32).toString('hex');
-    await user.save();
+    await User.update({ _id: user._id }, user);
 
-    // Send verification email
     try {
       const verificationUrl = getVerificationUrl(user.verificationToken);
       await emailService.sendEmail(
@@ -305,21 +270,16 @@ router.post('/resend-verification', auth, async (req, res) => {
   }
 });
 
-// @route   GET /api/auth/me
-// @desc    Get current user
-// @access  Private
 router.get('/me', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
+    const user = await User.findById(req.user._id);
+    if (user) delete user.password;
     res.json(user);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// @route   POST /api/auth/change-password
-// @desc    Change password
-// @access  Private
 router.post('/change-password', auth, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -329,16 +289,14 @@ router.post('/change-password', auth, async (req, res) => {
     }
 
     const user = await User.findById(req.user._id);
-    
-    // Verify current password
-    const isCurrentPasswordValid = await user.comparePassword(currentPassword);
+
+    const isCurrentPasswordValid = await User.comparePassword(currentPassword, user.password);
     if (!isCurrentPasswordValid) {
       return res.status(400).json({ message: 'Current password is incorrect' });
     }
 
-    // Update password
-    user.password = newPassword;
-    await user.save();
+    user.password = await bcrypt.hash(newPassword, 12);
+    await User.update({ _id: user._id }, user);
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {

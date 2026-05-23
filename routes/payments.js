@@ -1,6 +1,8 @@
 ﻿const express = require('express');
 const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
+const Product = require('../models/Product');
+const MongoShim = require('../utils/mongoshim');
 const PaynowClient = require('../utils/paynow');
 const { optionalAuth } = require('../middleware/auth');
 const { v4: uuidv4 } = require('uuid');
@@ -43,11 +45,32 @@ router.get('/methods', (req, res) => {
   res.json(methods);
 });
 
+async function populateItemsProduct(docs) {
+  const arr = Array.isArray(docs) ? docs : [docs];
+  const ids = [];
+  for (const d of arr) {
+    for (const item of (d.items || [])) {
+      if (item.product) {
+        ids.push(typeof item.product === 'object' ? (item.product._id || item.product.toString()) : item.product.toString());
+      }
+    }
+  }
+  if (!ids.length) return;
+  const uniqueIds = [...new Set(ids)];
+  const products = await Product.find({ _id: { $in: uniqueIds } });
+  const map = {};
+  for (const p of products) map[p._id] = p;
+  for (const d of arr) {
+    for (const item of (d.items || [])) {
+      const pid = typeof item.product === 'object' ? (item.product._id || item.product) : item.product;
+      if (pid && map[pid]) item.product = map[pid];
+    }
+  }
+}
+
 // @route   POST /api/payments/paynow/initiate
 // @desc    Initiate Paynow payment
 // @access  Public
-// Replace your existing POST /api/payments/paynow/initiate with this:
-
 router.post('/paynow/initiate', async (req, res) => {
   try {
     const { orderId } = req.body;
@@ -75,16 +98,13 @@ router.post('/paynow/initiate', async (req, res) => {
       });
     }
 
-    // ===== Create dynamic return URL with order ID AND email for guest verification =====
     const baseReturnUrl = process.env.PAYNOW_RETURN_URL || 
                          `${process.env.FRONTEND_URL}/payment-processing`;
     
-    // Add both order ID and email as query parameters for guest users
     const returnUrlWithParams = `${baseReturnUrl}?orderId=${order._id}&orderNumber=${order.orderNumber}&email=${encodeURIComponent(order.customerInfo.email)}&isGuest=${order.isGuest}`;
     
     console.log('≡ƒöù Return URL with params:', returnUrlWithParams);
 
-    // Create custom Paynow client with the dynamic return URL
     const PaynowClient = require('../utils/paynow');
     const customPaynow = new PaynowClient(
       process.env.PAYNOW_INTEGRATION_ID,
@@ -95,7 +115,6 @@ router.post('/paynow/initiate', async (req, res) => {
 
     const paynowAuthEmail = process.env.PAYNOW_AUTH_EMAIL || order.customerInfo.email;
 
-    // Initiate payment
     const paynowResult = await customPaynow.initiateTransaction(
       order.orderNumber,
       order.total,
@@ -114,8 +133,7 @@ router.post('/paynow/initiate', async (req, res) => {
       });
     }
 
-    // Create transaction record
-    const transaction = new Transaction({
+    const transaction = await Transaction.insert({
       order: order._id,
       transactionId: uuidv4(),
       paymentMethod: 'paynow',
@@ -128,12 +146,9 @@ router.post('/paynow/initiate', async (req, res) => {
       }
     });
 
-    await transaction.save();
-
-    // Update order
     order.paynowReference = paynowResult.reference;
     order.paymentStatus = 'awaiting_payment';
-    await order.save();
+    await Order.update({ _id: order._id }, order);
 
     console.log('Γ£à Paynow payment initiated successfully');
     console.log('≡ƒôª Order details for guest:', {
@@ -143,7 +158,6 @@ router.post('/paynow/initiate', async (req, res) => {
       email: order.customerInfo.email
     });
 
-    // IMPORTANT: Return everything the frontend needs
     res.json({
       success: true,
       redirectUrl: paynowResult.browserUrl,
@@ -152,7 +166,7 @@ router.post('/paynow/initiate', async (req, res) => {
       orderId: order._id,
       orderNumber: order.orderNumber,
       isGuest: order.isGuest,
-      email: order.customerInfo.email // Include for guest verification
+      email: order.customerInfo.email
     });
 
   } catch (error) {
@@ -164,11 +178,9 @@ router.post('/paynow/initiate', async (req, res) => {
   }
 });
 
-
 // @route   POST /api/payments/paynow/callback
 // @desc    Handle Paynow webhook/callback
 // @access  Public
-
 router.post('/paynow/callback', async (req, res) => {
   try {
     console.log('≡ƒôÑ Paynow callback received:', req.body);
@@ -180,9 +192,8 @@ router.post('/paynow/callback', async (req, res) => {
       return res.status(400).json({ message: 'Invalid callback data' });
     }
 
-    // Verify hash
     const callbackData = { ...req.body };
-    delete callbackData.hash; // Remove hash before verification
+    delete callbackData.hash;
     
     const isValidHash = paynow.verifyHash(callbackData, hash);
     
@@ -191,7 +202,6 @@ router.post('/paynow/callback', async (req, res) => {
       return res.status(400).json({ message: 'Invalid hash' });
     }
 
-    // Find order by reference (orderNumber)
     const order = await Order.findOne({ orderNumber: reference });
     if (!order) {
       console.error('Γ¥î Order not found for reference:', reference);
@@ -200,7 +210,6 @@ router.post('/paynow/callback', async (req, res) => {
 
     console.log(`≡ƒôè Updating order ${order.orderNumber} - Status: ${status}`);
 
-    // Update order based on payment status
     const statusLower = status.toLowerCase();
     
     if (statusLower === 'paid') {
@@ -215,9 +224,8 @@ router.post('/paynow/callback', async (req, res) => {
       order.status = 'processing';
     }
 
-    await order.save();
+    await Order.update({ _id: order._id }, order);
 
-    // Update transaction record
     const transaction = await Transaction.findOne({ order: order._id });
     if (transaction) {
       transaction.status = statusLower === 'paid' ? 'completed' : 'failed';
@@ -227,10 +235,9 @@ router.post('/paynow/callback', async (req, res) => {
         paynowReference: paynowreference,
         amount: amount
       };
-      await transaction.save();
+      await Transaction.update({ _id: transaction._id }, transaction);
     }
 
-    // Send confirmation email for successful payment
     if (statusLower === 'paid') {
       try {
         await sendOrderConfirmationWithInvoice(order);
@@ -263,18 +270,15 @@ router.post('/cash-on-delivery', async (req, res) => {
     order.paymentStatus = 'payment_on_delivery';
     order.status = 'processing';
     
-    await order.save();
+    await Order.update({ _id: order._id }, order);
 
-    // Create transaction record
-    const transaction = new Transaction({
+    const transaction = await Transaction.insert({
       order: order._id,
       transactionId: uuidv4(),
       paymentMethod: 'cash_on_delivery',
       amount: order.total,
       status: 'pending'
     });
-
-    await transaction.save();
 
     res.json({
       message: 'Cash on delivery order processed',
@@ -298,15 +302,16 @@ router.get('/paynow/order-by-reference', async (req, res) => {
 
     console.log('≡ƒöì Searching for order with Paynow reference:', reference);
 
-    // Find order by paynow reference
     const order = await Order.findOne({ 
       paynowReference: reference 
-    }).populate('items.product', 'name images sku');
+    });
 
     if (!order) {
       console.log('Γ¥î No order found with reference:', reference);
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    await populateItemsProduct(order);
 
     console.log('Γ£à Found order:', order.orderNumber);
 
@@ -332,14 +337,13 @@ router.get('/paynow/order-by-reference', async (req, res) => {
   }
 });
 
-// Add this new route for guest users to check their order status after payment
 // @route   GET /api/payments/paynow/order-status
 // @desc    Check order status by order ID (for guest users after payment)
 // @access  Public
 router.get('/paynow/order-status/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { email } = req.query; // Require email for security
+    const { email } = req.query;
 
     if (!email) {
       return res.status(400).json({ message: 'Email is required for security verification' });
@@ -349,13 +353,15 @@ router.get('/paynow/order-status/:orderId', async (req, res) => {
 
     const order = await Order.findOne({
       _id: orderId,
-      'customerInfo.email': email // Verify email matches
-    }).populate('items.product', 'name images sku');
+      'customerInfo.email': email
+    });
 
     if (!order) {
       console.log('Γ¥î Order not found or email mismatch');
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    await populateItemsProduct(order);
 
     console.log('Γ£à Order found:', {
       orderNumber: order.orderNumber,
@@ -404,20 +410,20 @@ router.get('/guest-invoice/:orderNumber', async (req, res) => {
       orderNumber,
       'customerInfo.email': email,
       isGuest: true
-    }).populate('items.product', 'name');
+    });
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found or email mismatch' });
     }
 
-    // Use the invoice generation logic
+    await populateItemsProduct(order);
+
     const pdfGenerator = require('../utils/pdfGenerator');
     
     if (format === 'pdf') {
       const result = await pdfGenerator.generateInvoice(order, { allowHtmlFallback: false });
       
       if (result && Buffer.isBuffer(result)) {
-        // PDF success
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="invoice-${order.orderNumber}.pdf"`);
         res.send(result);
@@ -425,7 +431,6 @@ router.get('/guest-invoice/:orderNumber', async (req, res) => {
         throw new Error('Invalid invoice generation result');
       }
     } else {
-      // Return JSON summary
       res.json({
         order: {
           orderNumber: order.orderNumber,
@@ -466,18 +471,15 @@ router.post('/collection', async (req, res) => {
     order.paymentStatus = 'payment_on_collection';
     order.status = 'processing';
     
-    await order.save();
+    await Order.update({ _id: order._id }, order);
 
-    // Create transaction record
-    const transaction = new Transaction({
+    const transaction = await Transaction.insert({
       order: order._id,
       transactionId: uuidv4(),
       paymentMethod: 'collection',
       amount: order.total,
       status: 'pending'
     });
-
-    await transaction.save();
 
     res.json({
       message: 'Collection order processed',

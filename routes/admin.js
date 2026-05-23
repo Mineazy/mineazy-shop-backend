@@ -2,8 +2,10 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
+const Category = require('../models/Category');
 const ContactMessage = require('../models/ContactMessage');
 const Transaction = require('../models/Transaction');
+const MongoShim = require('../utils/mongoshim');
 const { auth, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -28,7 +30,6 @@ router.get('/dashboard', auth, authorize('order_manager', 'inventory_manager', '
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const previousStartDate = new Date(startDate.getTime() - days * 24 * 60 * 60 * 1000);
 
-    // Get basic counts
     const [
       totalOrders,
       totalProducts,
@@ -42,8 +43,7 @@ router.get('/dashboard', auth, authorize('order_manager', 'inventory_manager', '
       currentPeriodRevenue,
       previousPeriodRevenue,
       currentPeriodUsers,
-      previousPeriodUsers,
-      recentOrders
+      previousPeriodUsers
     ] = await Promise.all([
       Order.countDocuments(),
       Product.countDocuments({ isActive: true }),
@@ -92,19 +92,12 @@ router.get('/dashboard', auth, authorize('order_manager', 'inventory_manager', '
       User.countDocuments({
         role: { $ne: 'super_admin' },
         createdAt: { $gte: previousStartDate, $lt: startDate }
-      }),
-      Order.find()
-        .select('orderNumber customerInfo.email total status createdAt')
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .lean()
+      })
     ]);
 
-    const revenueTrend = getPercentageChange(currentPeriodRevenue, previousPeriodRevenue);
-    const ordersTrend = getPercentageChange(currentPeriodOrders, previousPeriodOrders);
-    const usersTrend = getPercentageChange(currentPeriodUsers, previousPeriodUsers);
+    const recentOrders = await Order.find().sort({ createdAt: -1 });
+    const recentOrdersSlice = recentOrders.slice(0, 5);
 
-    // Get order status breakdown
     const [
       ordersByStatus,
       revenueByDay,
@@ -119,74 +112,43 @@ router.get('/dashboard', auth, authorize('order_manager', 'inventory_manager', '
         },
         { $sort: { count: -1 } }
       ]),
-      Order.aggregate([
-        {
-          $match: {
-            createdAt: { $gte: startDate },
-            paymentStatus: 'paid'
-          }
-        },
-        {
-          $group: {
-            _id: {
-              $dateToString: {
-                format: '%Y-%m-%d',
-                date: '$createdAt'
-              }
-            },
-            revenue: { $sum: '$total' },
-            orders: { $sum: 1 }
-          }
-        },
-        { $sort: { _id: 1 } }
-      ]),
-      Order.aggregate([
-        {
-          $match: {
-            status: { $ne: 'cancelled' }
-          }
-        },
-        { $unwind: '$items' },
-        {
-          $group: {
-            _id: '$items.product',
-            name: { $first: '$items.name' },
-            sku: { $first: '$items.sku' },
-            unitsSold: { $sum: '$items.quantity' },
-            revenue: { $sum: '$items.total' }
-          }
-        },
-        { $sort: { unitsSold: -1, revenue: -1 } },
-        { $limit: 5 },
-        {
-          $lookup: {
-            from: 'products',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'product'
-          }
-        },
-        {
-          $addFields: {
-            name: {
-              $ifNull: ['$name', { $arrayElemAt: ['$product.name', 0] }]
-            },
-            sku: {
-              $ifNull: ['$sku', { $arrayElemAt: ['$product.sku', 0] }]
+      (async () => {
+        const paidOrders = await Order.find({
+          createdAt: { $gte: startDate },
+          paymentStatus: 'paid'
+        });
+        const dayGroups = {};
+        for (const o of paidOrders) {
+          const key = o.createdAt ? new Date(o.createdAt).toISOString().split('T')[0] : 'unknown';
+          if (!dayGroups[key]) dayGroups[key] = { _id: key, revenue: 0, orders: 0 };
+          dayGroups[key].revenue += (o.total || 0);
+          dayGroups[key].orders += 1;
+        }
+        return Object.values(dayGroups).sort((a, b) => a._id.localeCompare(b._id));
+      })(),
+      (async () => {
+        const allOrders = await Order.find({ status: { $ne: 'cancelled' } });
+        const prodMap = {};
+        for (const o of allOrders) {
+          for (const item of (o.items || [])) {
+            const pid = item.product ? (typeof item.product === 'object' ? item.product._id || item.product.toString() : item.product.toString()) : null;
+            if (!pid) continue;
+            if (!prodMap[pid]) {
+              prodMap[pid] = { _id: pid, name: item.name, sku: item.sku, unitsSold: 0, revenue: 0 };
             }
-          }
-        },
-        {
-          $project: {
-            _id: 1,
-            name: 1,
-            sku: 1,
-            unitsSold: 1,
-            revenue: 1
+            prodMap[pid].unitsSold += (item.quantity || 0);
+            prodMap[pid].revenue += (item.total || 0);
           }
         }
-      ])
+        return Object.values(prodMap)
+          .sort((a, b) => b.unitsSold - a.unitsSold || b.revenue - a.revenue)
+          .slice(0, 5);
+      })()
     ]);
+
+    const revenueTrend = getPercentageChange(currentPeriodRevenue, previousPeriodRevenue);
+    const ordersTrend = getPercentageChange(currentPeriodOrders, previousPeriodOrders);
+    const usersTrend = getPercentageChange(currentPeriodUsers, previousPeriodUsers);
 
     res.json({
       stats: {
@@ -211,7 +173,7 @@ router.get('/dashboard', auth, authorize('order_manager', 'inventory_manager', '
         ...product,
         revenue: roundCurrency(product.revenue)
       })),
-      recentOrders
+      recentOrders: recentOrdersSlice
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -234,9 +196,6 @@ router.get('/orders', auth, authorize('order_manager', 'super_admin'), async (re
     } = req.query;
 
     const query = {};
-
-    // DO NOT filter by user - admins should see ALL orders
-    // This was the bug that prevented super_admin from seeing all orders
 
     if (status) query.status = status;
     if (paymentStatus) query.paymentStatus = paymentStatus;
@@ -261,11 +220,8 @@ router.get('/orders', auth, authorize('order_manager', 'super_admin'), async (re
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    const orders = await Order.find(query)
-      .populate('user', 'firstName lastName email')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum);
+    const orders = await Order.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum);
+    await MongoShim.populate(orders, 'user', User, 'firstName lastName email');
 
     const total = await Order.countDocuments(query);
 
@@ -287,12 +243,27 @@ router.get('/orders', auth, authorize('order_manager', 'super_admin'), async (re
 // @access  Private (Admin only)
 router.get('/orders/:id', auth, authorize('order_manager', 'super_admin'), async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id)
-      .populate('user', 'firstName lastName email phone')
-      .populate('items.product', 'name images sku');
+    const order = await Order.findById(req.params.id);
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
+    }
+
+    await MongoShim.populate([order], 'user', User, 'firstName lastName email phone');
+
+    if (order.items) {
+      const productIds = [...new Set(order.items.map(item =>
+        item.product ? (typeof item.product === 'object' ? item.product._id || item.product.toString() : item.product.toString()) : null
+      ).filter(Boolean))];
+      if (productIds.length > 0) {
+        const products = await Product.find({ _id: { $in: productIds } });
+        const prodMap = {};
+        for (const p of products) prodMap[p._id] = p;
+        for (const item of order.items) {
+          const pid = typeof item.product === 'object' ? (item.product._id || item.product) : item.product;
+          if (pid && prodMap[pid]) item.product = prodMap[pid];
+        }
+      }
     }
 
     res.json(order);
@@ -318,9 +289,8 @@ router.put('/orders/:id', auth, authorize('order_manager', 'super_admin'), async
     if (trackingNumber) order.trackingNumber = trackingNumber;
     if (notes !== undefined) order.notes = notes;
 
-    await order.save();
+    await Order.update({ _id: order._id }, order);
 
-    // Send status update email if status changed
     if (status && status !== order.status) {
       try {
         const emailService = require('../utils/emailService');
@@ -349,20 +319,18 @@ router.delete('/orders/:id', auth, authorize('order_manager', 'super_admin'), as
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    // Only allow deletion of pending/cancelled orders
     if (!['pending', 'cancelled'].includes(order.status)) {
       return res.status(400).json({ 
         message: 'Cannot delete orders that are processing, shipped, or delivered' 
       });
     }
 
-    // Restore product stock if cancelling
     if (order.status !== 'cancelled') {
       for (const item of order.items) {
         const product = await Product.findById(item.product);
         if (product) {
           product.stockQuantity += item.quantity;
-          await product.save();
+          await Product.update({ _id: product._id }, product);
         }
       }
     }
@@ -416,11 +384,8 @@ router.get('/users', auth, authorize('super_admin'), async (req, res) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    const users = await User.find(query)
-      .select('-password')
-      .sort(sort)
-      .skip(skip)
-      .limit(limitNum);
+    const users = await User.find(query).sort(sort).skip(skip).limit(limitNum);
+    users.forEach(u => delete u.password);
 
     const total = await User.countDocuments(query);
 
@@ -474,11 +439,8 @@ router.get('/products', auth, authorize('inventory_manager', 'super_admin'), asy
     const sort = {};
     sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    const products = await Product.find(query)
-      .populate('category', 'name slug')
-      .sort(sort)
-      .skip(skip)
-      .limit(limitNum);
+    const products = await Product.find(query).sort(sort).skip(skip).limit(limitNum);
+    await MongoShim.populate(products, 'category', Category, 'name slug');
 
     const total = await Product.countDocuments(query);
 
@@ -515,17 +477,21 @@ router.get('/stats/revenue', auth, authorize('order_manager', 'super_admin'), as
         $group: {
           _id: null,
           totalRevenue: { $sum: '$total' },
-          totalOrders: { $sum: 1 },
-          avgOrderValue: { $avg: '$total' }
+          totalOrders: { $sum: 1 }
         }
       }
     ]);
 
-    res.json(revenueStats[0] || {
+    const result = revenueStats[0] || {
       totalRevenue: 0,
       totalOrders: 0,
       avgOrderValue: 0
-    });
+    };
+    if (result.totalOrders > 0) {
+      result.avgOrderValue = result.totalRevenue / result.totalOrders;
+    }
+
+    res.json(result);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }

@@ -1,23 +1,26 @@
 ﻿const express = require('express');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
+const MongoShim = require('../utils/mongoshim');
 const { auth, optionalAuth } = require('../middleware/auth');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 
 const router = express.Router();
 
-// Helper function to get or create cart
+const genItemId = () => crypto.randomBytes(12).toString('hex');
+
 const getOrCreateCart = async (user, sessionId) => {
   let cart;
-  
+
   if (user) {
-    cart = await Cart.findOne({ user: user._id }).populate('items.product');
+    cart = await Cart.findOne({ user: user._id });
   } else {
-    cart = await Cart.findOne({ sessionId }).populate('items.product');
+    cart = await Cart.findOne({ sessionId });
   }
 
   if (!cart) {
-    cart = new Cart({
+    cart = await Cart.insert({
       user: user ? user._id : null,
       sessionId: user ? null : sessionId,
       isGuest: !user,
@@ -28,13 +31,14 @@ const getOrCreateCart = async (user, sessionId) => {
   return cart;
 };
 
-// @route   GET /api/cart
-// @desc    Get user's cart
-// @access  Public (with optional auth)
 router.get('/', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'] || uuidv4();
     const cart = await getOrCreateCart(req.user, sessionId);
+
+    if (cart.items && cart.items.length > 0) {
+      await MongoShim.populate(cart, 'items.product', Product);
+    }
 
     res.json({
       cart,
@@ -45,15 +49,11 @@ router.get('/', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   POST /api/cart/items
-// @desc    Add item to cart
-// @access  Public (with optional auth)
 router.post('/items', optionalAuth, async (req, res) => {
   try {
     const { productId, quantity = 1 } = req.body;
     const sessionId = req.headers['x-session-id'] || uuidv4();
 
-    // Validate product
     const product = await Product.findById(productId);
     if (!product || !product.isActive) {
       return res.status(404).json({ message: 'Product not found' });
@@ -63,30 +63,28 @@ router.post('/items', optionalAuth, async (req, res) => {
       return res.status(400).json({ message: 'Insufficient stock' });
     }
 
-    const cart = await getOrCreateCart(req.user, sessionId);
+    let cart = await getOrCreateCart(req.user, sessionId);
 
-    // Check if item already exists in cart
-    const existingItem = cart.items.find(item => 
-      item.product._id.toString() === productId
-    );
+    const existingItem = cart.items.find(item => item.product === productId);
 
     if (existingItem) {
-      // Update quantity
       existingItem.quantity += quantity;
       if (existingItem.quantity > product.stockQuantity) {
         existingItem.quantity = product.stockQuantity;
       }
     } else {
-      // Add new item
-      cart.items.push({
+      cart.items = [...(cart.items || []), {
+        _id: genItemId(),
         product: productId,
         quantity,
         price: product.effectivePrice
-      });
+      }];
     }
 
-    await cart.save();
-    await cart.populate('items.product');
+    cart.totalItems = cart.items.reduce((t, i) => t + i.quantity, 0);
+    cart.subtotal = cart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+    await Cart.update({ _id: cart._id }, cart);
+    await MongoShim.populate(cart, 'items.product', Product);
 
     res.json({
       message: 'Item added to cart',
@@ -98,30 +96,28 @@ router.post('/items', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   PUT /api/cart/items/:id
-// @desc    Update cart item quantity
-// @access  Public (with optional auth)
 router.put('/items/:id', optionalAuth, async (req, res) => {
   try {
     const { quantity } = req.body;
     const sessionId = req.headers['x-session-id'];
 
     const cart = await getOrCreateCart(req.user, sessionId);
-    const item = cart.items.id(req.params.id);
+    const item = cart.items.find(i => i._id === req.params.id);
 
     if (!item) {
       return res.status(404).json({ message: 'Cart item not found' });
     }
 
-    // Validate stock
     const product = await Product.findById(item.product);
     if (quantity > product.stockQuantity) {
       return res.status(400).json({ message: 'Insufficient stock' });
     }
 
     item.quantity = quantity;
-    await cart.save();
-    await cart.populate('items.product');
+    cart.totalItems = cart.items.reduce((t, i) => t + i.quantity, 0);
+    cart.subtotal = cart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+    await Cart.update({ _id: cart._id }, cart);
+    await MongoShim.populate(cart, 'items.product', Product);
 
     res.json({
       message: 'Cart updated',
@@ -132,14 +128,11 @@ router.put('/items/:id', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   PUT /api/cart/items/:id/increment
-// @desc    Increment item quantity
-// @access  Public (with optional auth)
 router.put('/items/:id/increment', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     const cart = await getOrCreateCart(req.user, sessionId);
-    const item = cart.items.id(req.params.id);
+    const item = cart.items.find(i => i._id === req.params.id);
 
     if (!item) {
       return res.status(404).json({ message: 'Cart item not found' });
@@ -151,8 +144,10 @@ router.put('/items/:id/increment', optionalAuth, async (req, res) => {
     }
 
     item.quantity += 1;
-    await cart.save();
-    await cart.populate('items.product');
+    cart.totalItems = cart.items.reduce((t, i) => t + i.quantity, 0);
+    cart.subtotal = cart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+    await Cart.update({ _id: cart._id }, cart);
+    await MongoShim.populate(cart, 'items.product', Product);
 
     res.json({ cart });
   } catch (error) {
@@ -160,27 +155,26 @@ router.put('/items/:id/increment', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   PUT /api/cart/items/:id/decrement
-// @desc    Decrement item quantity
-// @access  Public (with optional auth)
 router.put('/items/:id/decrement', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     const cart = await getOrCreateCart(req.user, sessionId);
-    const item = cart.items.id(req.params.id);
+    const item = cart.items.find(i => i._id === req.params.id);
 
     if (!item) {
       return res.status(404).json({ message: 'Cart item not found' });
     }
 
     if (item.quantity <= 1) {
-      cart.items.pull(req.params.id);
+      cart.items = cart.items.filter(i => i._id !== req.params.id);
     } else {
       item.quantity -= 1;
     }
 
-    await cart.save();
-    await cart.populate('items.product');
+    cart.totalItems = cart.items.reduce((t, i) => t + i.quantity, 0);
+    cart.subtotal = cart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+    await Cart.update({ _id: cart._id }, cart);
+    await MongoShim.populate(cart, 'items.product', Product);
 
     res.json({ cart });
   } catch (error) {
@@ -188,17 +182,16 @@ router.put('/items/:id/decrement', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   DELETE /api/cart/items/:id
-// @desc    Remove item from cart
-// @access  Public (with optional auth)
 router.delete('/items/:id', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     const cart = await getOrCreateCart(req.user, sessionId);
 
-    cart.items.pull(req.params.id);
-    await cart.save();
-    await cart.populate('items.product');
+    cart.items = cart.items.filter(i => i._id !== req.params.id);
+    cart.totalItems = cart.items.reduce((t, i) => t + i.quantity, 0);
+    cart.subtotal = cart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+    await Cart.update({ _id: cart._id }, cart);
+    await MongoShim.populate(cart, 'items.product', Product);
 
     res.json({
       message: 'Item removed from cart',
@@ -209,16 +202,15 @@ router.delete('/items/:id', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   DELETE /api/cart
-// @desc    Clear cart
-// @access  Public (with optional auth)
 router.delete('/', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     const cart = await getOrCreateCart(req.user, sessionId);
 
     cart.items = [];
-    await cart.save();
+    cart.totalItems = 0;
+    cart.subtotal = 0;
+    await Cart.update({ _id: cart._id }, cart);
 
     res.json({
       message: 'Cart cleared',
@@ -229,9 +221,6 @@ router.delete('/', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   GET /api/cart/count
-// @desc    Get cart items count
-// @access  Public (with optional auth)
 router.get('/count', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
@@ -243,9 +232,6 @@ router.get('/count', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   POST /api/cart/merge
-// @desc    Merge guest cart with user cart after login
-// @access  Private
 router.post('/merge', auth, async (req, res) => {
   try {
     const { guestSessionId } = req.body;
@@ -254,51 +240,44 @@ router.post('/merge', auth, async (req, res) => {
       return res.status(400).json({ message: 'Guest session ID required' });
     }
 
-    // Get guest cart
-    const guestCart = await Cart.findOne({ sessionId: guestSessionId }).populate('items.product');
-    if (!guestCart || guestCart.items.length === 0) {
+    const guestCart = await Cart.findOne({ sessionId: guestSessionId });
+    if (!guestCart || !guestCart.items || guestCart.items.length === 0) {
       return res.json({ message: 'No guest cart to merge' });
     }
 
-    // Get or create user cart
-    let userCart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+    let userCart = await Cart.findOne({ user: req.user._id });
     if (!userCart) {
-      userCart = new Cart({
+      userCart = await Cart.insert({
         user: req.user._id,
         isGuest: false,
         items: []
       });
     }
 
-    // Merge items
     for (const guestItem of guestCart.items) {
-      const existingItem = userCart.items.find(item => 
-        item.product._id.toString() === guestItem.product._id.toString()
-      );
+      const existingItem = userCart.items.find(item => item.product === guestItem.product);
 
       if (existingItem) {
-        // Update quantity
         existingItem.quantity += guestItem.quantity;
-        
-        // Check stock limit
-        const product = await Product.findById(guestItem.product._id);
+
+        const product = await Product.findById(guestItem.product);
         if (existingItem.quantity > product.stockQuantity) {
           existingItem.quantity = product.stockQuantity;
         }
       } else {
-        // Add new item
-        userCart.items.push({
-          product: guestItem.product._id,
+        userCart.items = [...(userCart.items || []), {
+          _id: genItemId(),
+          product: guestItem.product,
           quantity: guestItem.quantity,
           price: guestItem.price
-        });
+        }];
       }
     }
 
-    await userCart.save();
-    await userCart.populate('items.product');
-
-    // Delete guest cart
+    userCart.totalItems = userCart.items.reduce((t, i) => t + i.quantity, 0);
+    userCart.subtotal = userCart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+    await Cart.update({ _id: userCart._id }, userCart);
+    await MongoShim.populate(userCart, 'items.product', Product);
     await Cart.findByIdAndDelete(guestCart._id);
 
     res.json({
@@ -310,15 +289,12 @@ router.post('/merge', auth, async (req, res) => {
   }
 });
 
-// @route   POST /api/cart/validate
-// @desc    Validate cart items (stock, price, availability)
-// @access  Public (with optional auth)
 router.post('/validate', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     const cart = await getOrCreateCart(req.user, sessionId);
 
-    if (!cart || cart.items.length === 0) {
+    if (!cart || !cart.items || cart.items.length === 0) {
       return res.status(400).json({ message: 'Cart is empty' });
     }
 
@@ -329,13 +305,13 @@ router.post('/validate', optionalAuth, async (req, res) => {
     };
 
     for (const item of cart.items) {
-      const product = await Product.findById(item.product._id);
-      
+      const product = await Product.findById(item.product);
+
       if (!product || !product.isActive) {
         validationResults.isValid = false;
         validationResults.errors.push({
           itemId: item._id,
-          productId: item.product._id,
+          productId: item.product,
           error: 'Product no longer available'
         });
         continue;
@@ -345,7 +321,7 @@ router.post('/validate', optionalAuth, async (req, res) => {
         validationResults.isValid = false;
         validationResults.errors.push({
           itemId: item._id,
-          productId: item.product._id,
+          productId: item.product,
           error: 'Product out of stock'
         });
         continue;
@@ -355,19 +331,18 @@ router.post('/validate', optionalAuth, async (req, res) => {
         validationResults.isValid = false;
         validationResults.errors.push({
           itemId: item._id,
-          productId: item.product._id,
+          productId: item.product,
           error: `Only ${product.stockQuantity} items available`
         });
         continue;
       }
 
-      // Check for price changes
       const currentPrice = product.effectivePrice;
       if (item.price !== currentPrice) {
         item.price = currentPrice;
         validationResults.updates.push({
           itemId: item._id,
-          productId: item.product._id,
+          productId: item.product,
           oldPrice: item.price,
           newPrice: currentPrice,
           message: 'Price updated'
@@ -376,8 +351,10 @@ router.post('/validate', optionalAuth, async (req, res) => {
     }
 
     if (validationResults.updates.length > 0) {
-      await cart.save();
-      await cart.populate('items.product');
+      cart.totalItems = cart.items.reduce((t, i) => t + i.quantity, 0);
+      cart.subtotal = cart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+      await Cart.update({ _id: cart._id }, cart);
+      await MongoShim.populate(cart, 'items.product', Product);
     }
 
     res.json({
@@ -389,9 +366,6 @@ router.post('/validate', optionalAuth, async (req, res) => {
   }
 });
 
-// @route   POST /api/cart/save-for-later/:id
-// @desc    Save cart item for later (move to wishlist)
-// @access  Private
 router.post('/save-for-later/:id', auth, async (req, res) => {
   try {
     const cart = await Cart.findOne({ user: req.user._id });
@@ -399,15 +373,15 @@ router.post('/save-for-later/:id', auth, async (req, res) => {
       return res.status(404).json({ message: 'Cart not found' });
     }
 
-    const item = cart.items.id(req.params.id);
+    const item = cart.items.find(i => i._id === req.params.id);
     if (!item) {
       return res.status(404).json({ message: 'Cart item not found' });
     }
 
-    // In a real implementation, you would move this to a wishlist
-    // For now, we'll just remove it from cart
-    cart.items.pull(req.params.id);
-    await cart.save();
+    cart.items = cart.items.filter(i => i._id !== req.params.id);
+    cart.totalItems = cart.items.reduce((t, i) => t + i.quantity, 0);
+    cart.subtotal = cart.items.reduce((t, i) => t + (i.price * i.quantity), 0);
+    await Cart.update({ _id: cart._id }, cart);
 
     res.json({
       message: 'Item saved for later',
@@ -418,9 +392,6 @@ router.post('/save-for-later/:id', auth, async (req, res) => {
   }
 });
 
-// @route   GET /api/cart/summary
-// @desc    Get cart summary (totals, item count, etc.)
-// @access  Public (with optional auth)
 router.get('/summary', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
@@ -429,7 +400,7 @@ router.get('/summary', optionalAuth, async (req, res) => {
     const summary = {
       itemCount: cart.totalItems,
       subtotal: cart.subtotal,
-      estimatedTax: cart.subtotal * 0.155, // 15.5% VAT
+      estimatedTax: cart.subtotal * 0.155,
       estimatedTotal: cart.subtotal + (cart.subtotal * 0.155),
       hasItems: cart.items.length > 0
     };

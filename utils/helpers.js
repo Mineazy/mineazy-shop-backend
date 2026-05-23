@@ -158,7 +158,7 @@ class Helpers {
 
     // Text search
     if (query.search) {
-      filters.$text = { $search: query.search };
+      filters.$search = query.search;
     }
 
     // Category filter

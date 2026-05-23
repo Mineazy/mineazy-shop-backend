@@ -1,9 +1,23 @@
 ﻿const express = require('express');
 const Quote = require('../models/Quote');
 const Product = require('../models/Product');
+const User = require('../models/User');
 const { auth, optionalAuth, authorize } = require('../middleware/auth');
+const MongoShim = require('../utils/mongoshim');
 
 const router = express.Router();
+
+const populateItemsProduct = async (items, selectFields) => {
+  if (!items || !items.length) return;
+  const ids = [...new Set(items.map(i => i.product).filter(Boolean))];
+  if (!ids.length) return;
+  const prods = await Product.find({ _id: { $in: ids } });
+  const map = {};
+  for (const p of prods) map[p._id] = p;
+  for (const item of items) {
+    if (item.product && map[item.product]) item.product = map[item.product];
+  }
+};
 
 // @route   POST /api/quotes
 // @desc    Create quote request
@@ -77,10 +91,9 @@ router.post('/', optionalAuth, async (req, res) => {
       validUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
     };
 
-    const quote = new Quote(quoteData);
-    await quote.save();
+    const quote = await Quote.insert(quoteData);
 
-    await quote.populate('items.product', 'name sku price');
+    await populateItemsProduct(quote.items);
 
     res.status(201).json({
       message: 'Quote request created successfully',
@@ -97,8 +110,11 @@ router.post('/', optionalAuth, async (req, res) => {
 router.get('/', auth, async (req, res) => {
   try {
     const quotes = await Quote.find({ user: req.user._id })
-      .populate('items.product', 'name sku price')
       .sort({ createdAt: -1 });
+
+    for (const quote of quotes) {
+      await populateItemsProduct(quote.items);
+    }
 
     res.json(quotes);
   } catch (error) {
@@ -114,7 +130,11 @@ router.get('/:id', auth, async (req, res) => {
     const quote = await Quote.findOne({
       _id: req.params.id,
       user: req.user._id
-    }).populate('items.product', 'name sku price images');
+    });
+
+    if (quote) {
+      await populateItemsProduct(quote.items);
+    }
 
     if (!quote) {
       return res.status(404).json({ message: 'Quote not found' });
@@ -149,7 +169,7 @@ router.put('/:id/accept', auth, async (req, res) => {
     }
 
     quote.status = 'accepted';
-    await quote.save();
+    await Quote.update({ _id: quote._id }, quote);
 
     res.json({
       message: 'Quote accepted successfully',
@@ -184,7 +204,7 @@ router.put('/:id/reject', auth, async (req, res) => {
     if (reason) {
       quote.notes = (quote.notes || '') + `\n\nRejection reason: ${reason}`;
     }
-    await quote.save();
+    await Quote.update({ _id: quote._id }, quote);
 
     res.json({
       message: 'Quote rejected',
@@ -239,12 +259,15 @@ router.get('/admin/all', auth, authorize('sales_rep', 'super_admin'), async (req
     const skip = (pageNum - 1) * limitNum;
 
     const quotes = await Quote.find(query)
-      .populate('user', 'firstName lastName email')
-      .populate('items.product', 'name sku')
-      .populate('salesRep', 'firstName lastName')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNum);
+
+    await MongoShim.populate(quotes, 'user', User, 'firstName lastName email');
+    await MongoShim.populate(quotes, 'salesRep', User, 'firstName lastName');
+    for (const quote of quotes) {
+      await populateItemsProduct(quote.items);
+    }
 
     const total = await Quote.countDocuments(query);
 
@@ -289,7 +312,7 @@ router.put('/:id/admin/update', auth, authorize('sales_rep', 'super_admin'), asy
     if (salesRep) quote.salesRep = salesRep;
     if (validUntil) quote.validUntil = validUntil;
 
-    await quote.save();
+    await Quote.update({ _id: quote._id }, quote);
 
     res.json({
       message: 'Quote updated successfully',
@@ -305,8 +328,11 @@ router.put('/:id/admin/update', auth, authorize('sales_rep', 'super_admin'), asy
 // @access  Private (Sales Rep/Admin only)
 router.post('/:id/send', auth, authorize('sales_rep', 'super_admin'), async (req, res) => {
   try {
-    const quote = await Quote.findById(req.params.id)
-      .populate('items.product', 'name sku price');
+    const quote = await Quote.findById(req.params.id);
+
+    if (quote) {
+      await populateItemsProduct(quote.items);
+    }
 
     if (!quote) {
       return res.status(404).json({ message: 'Quote not found' });
@@ -318,7 +344,7 @@ router.post('/:id/send', auth, authorize('sales_rep', 'super_admin'), async (req
 
     quote.status = 'sent';
     quote.salesRep = req.user._id;
-    await quote.save();
+    await Quote.update({ _id: quote._id }, quote);
 
     // Send quote email (placeholder - implement email service)
     // await emailService.sendQuote(quote);

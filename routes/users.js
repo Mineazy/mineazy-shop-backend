@@ -10,15 +10,12 @@ const normalizeUser = (user) => {
     return user;
   }
 
-  const plainUser = typeof user.toObject === 'function' ? user.toObject() : { ...user };
-
   return {
-    ...plainUser,
-    isActive: plainUser.isActive !== false
+    ...user,
+    isActive: user.isActive !== false
   };
 };
 
-// Validation middleware
 const profileValidation = [
   body('firstName').optional().trim().isLength({ min: 1 }),
   body('lastName').optional().trim().isLength({ min: 1 }),
@@ -36,21 +33,16 @@ const profileValidation = [
   }
 ];
 
-// @route   GET /api/users/profile
-// @desc    Get user profile
-// @access  Private
 router.get('/profile', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
+    const user = await User.findById(req.user._id);
+    if (user) delete user.password;
     res.json(normalizeUser(user));
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// @route   PUT /api/users/profile
-// @desc    Update user profile
-// @access  Private
 router.put('/profile', auth, profileValidation, async (req, res) => {
   try {
     const {
@@ -66,14 +58,13 @@ router.put('/profile', auth, profileValidation, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Update fields
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (phone) user.phone = phone;
     if (company) user.company = company;
     if (address) user.address = address;
 
-    await user.save();
+    await User.update({ _id: user._id }, user);
 
     res.json({
       message: 'Profile updated successfully',
@@ -94,9 +85,6 @@ router.put('/profile', auth, profileValidation, async (req, res) => {
   }
 });
 
-// @route   DELETE /api/users/account
-// @desc    Delete user account
-// @access  Private
 router.delete('/account', auth, async (req, res) => {
   try {
     const { password } = req.body;
@@ -106,14 +94,12 @@ router.delete('/account', auth, async (req, res) => {
     }
 
     const user = await User.findById(req.user._id);
-    
-    // Verify password
-    const isPasswordValid = await user.comparePassword(password);
+
+    const isPasswordValid = await User.comparePassword(password, user.password);
     if (!isPasswordValid) {
       return res.status(400).json({ message: 'Invalid password' });
     }
 
-    // Prevent super admin deletion
     if (user.role === 'super_admin') {
       return res.status(403).json({ message: 'Super admin account cannot be deleted' });
     }
@@ -126,11 +112,6 @@ router.delete('/account', auth, async (req, res) => {
   }
 });
 
-// Admin routes for user management
-
-// @route   GET /api/users
-// @desc    Get all users (Admin)
-// @access  Private (Admin only)
 router.get('/', auth, authorize('super_admin'), async (req, res) => {
   try {
     const {
@@ -143,7 +124,6 @@ router.get('/', auth, authorize('super_admin'), async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // Build query
     const query = {};
 
     if (role && role !== 'all') {
@@ -167,12 +147,10 @@ router.get('/', auth, authorize('super_admin'), async (req, res) => {
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    // Build sort object
     const sort = {};
     sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
     const users = await User.find(query)
-      .select('-password')
       .sort(sort)
       .skip(skip)
       .limit(limitNum);
@@ -192,26 +170,21 @@ router.get('/', auth, authorize('super_admin'), async (req, res) => {
   }
 });
 
-// @route   GET /api/users/:id
-// @desc    Get single user (Admin)
-// @access  Private (Admin only)
 router.get('/:id', auth, authorize('super_admin'), async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('-password');
-    
+    const user = await User.findById(req.params.id);
+
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    delete user.password;
     res.json(normalizeUser(user));
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// @route   PUT /api/users/:id
-// @desc    Update user (Admin)
-// @access  Private (Admin only)
 router.put('/:id', auth, authorize('super_admin'), async (req, res) => {
   try {
     const {
@@ -230,12 +203,10 @@ router.put('/:id', auth, authorize('super_admin'), async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Prevent changing super admin role
     if (user.role === 'super_admin' && role !== 'super_admin') {
       return res.status(403).json({ message: 'Cannot change super admin role' });
     }
 
-    // Update fields
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (email) user.email = email;
@@ -245,23 +216,20 @@ router.put('/:id', auth, authorize('super_admin'), async (req, res) => {
     if (company) user.company = company;
     if (address) user.address = address;
 
-    await user.save();
+    await User.update({ _id: user._id }, user);
+
+    const updatedUser = await User.findById(user._id);
+    if (updatedUser) delete updatedUser.password;
 
     res.json({
       message: 'User updated successfully',
-      user: normalizeUser(await User.findById(user._id).select('-password'))
+      user: normalizeUser(updatedUser)
     });
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({ message: 'Email already exists' });
-    }
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// @route   DELETE /api/users/:id
-// @desc    Delete user (Admin)
-// @access  Private (Admin only)
 router.delete('/:id', auth, authorize('super_admin'), async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -269,12 +237,10 @@ router.delete('/:id', auth, authorize('super_admin'), async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Prevent super admin deletion
     if (user.role === 'super_admin') {
       return res.status(403).json({ message: 'Super admin account cannot be deleted' });
     }
 
-    // Prevent self-deletion
     if (user._id.toString() === req.user._id.toString()) {
       return res.status(400).json({ message: 'Cannot delete your own account' });
     }
@@ -287,9 +253,6 @@ router.delete('/:id', auth, authorize('super_admin'), async (req, res) => {
   }
 });
 
-// @route   POST /api/users/:id/toggle-status
-// @desc    Toggle user active/inactive status (Admin)
-// @access  Private (Admin only)
 router.post('/:id/toggle-status', auth, authorize('super_admin'), async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -297,34 +260,32 @@ router.post('/:id/toggle-status', auth, authorize('super_admin'), async (req, re
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Prevent super admin status change
     if (user.role === 'super_admin') {
       return res.status(403).json({ message: 'Cannot change super admin status' });
     }
 
     const hasExplicitStatus = typeof req.body?.isActive === 'boolean';
     user.isActive = hasExplicitStatus ? req.body.isActive : !(user.isActive !== false);
-    await user.save();
+    await User.update({ _id: user._id }, user);
+
+    const updatedUser = await User.findById(user._id);
+    if (updatedUser) delete updatedUser.password;
 
     res.json({
       message: `User ${user.isActive ? 'activated' : 'deactivated'} successfully`,
-      user: normalizeUser(await User.findById(user._id).select('-password'))
+      user: normalizeUser(updatedUser)
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// @route   GET /api/users/stats/overview
-// @desc    Get user statistics (Admin)
-// @access  Private (Admin only)
 router.get('/stats/overview', auth, authorize('super_admin'), async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
     const verifiedUsers = await User.countDocuments({ isVerified: true });
     const activeUsers = await User.countDocuments({ $or: [{ isActive: true }, { isActive: { $exists: false } }] });
-    
-    // User role distribution
+
     const roleDistribution = await User.aggregate([
       {
         $group: {
@@ -334,7 +295,6 @@ router.get('/stats/overview', auth, authorize('super_admin'), async (req, res) =
       }
     ]);
 
-    // Recent registrations (last 30 days)
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const recentRegistrations = await User.countDocuments({
       createdAt: { $gte: thirtyDaysAgo }

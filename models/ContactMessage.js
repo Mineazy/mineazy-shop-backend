@@ -1,39 +1,14 @@
-﻿const mongoose = require('mongoose');
+﻿const MongoShim = require('../utils/mongoshim');
 
-const contactMessageSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  email: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  phone: String,
-  subject: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  message: {
-    type: String,
-    required: true
-  },
-  status: {
-    type: String,
-    enum: ['new', 'read', 'replied', 'closed'],
-    default: 'new'
-  },
-  response: String,
-  respondedAt: Date,
-  respondedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+const ContactMessage = new MongoShim('contactmessages', {
+  timestamps: true,
+  fields: {
+    name: { default: '' },
+    email: { default: '' },
+    subject: { default: '' },
+    message: { default: '' },
+    status: { default: 'new' }
   }
-}, {
-  timestamps: true
 });
 
-module.exports = mongoose.model('ContactMessage', contactMessageSchema);
+module.exports = ContactMessage;

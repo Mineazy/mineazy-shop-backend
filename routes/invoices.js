@@ -2,6 +2,8 @@
 const Order = require('../models/Order');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Product = require('../models/Product');
+const MongoShim = require('../utils/mongoshim');
 const { auth, authorize } = require('../middleware/auth');
 const pdfGenerator = require('../utils/pdfGenerator');
 const emailService = require('../utils/emailService');
@@ -28,6 +30,29 @@ const getCustomerOrderQuery = (user) => {
   return query;
 };
 
+async function populateItemsProduct(docs) {
+  const arr = Array.isArray(docs) ? docs : [docs];
+  const ids = [];
+  for (const d of arr) {
+    for (const item of (d.items || [])) {
+      if (item.product) {
+        ids.push(typeof item.product === 'object' ? (item.product._id || item.product.toString()) : item.product.toString());
+      }
+    }
+  }
+  if (!ids.length) return;
+  const uniqueIds = [...new Set(ids)];
+  const products = await Product.find({ _id: { $in: uniqueIds } });
+  const map = {};
+  for (const p of products) map[p._id] = p;
+  for (const d of arr) {
+    for (const item of (d.items || [])) {
+      const pid = typeof item.product === 'object' ? (item.product._id || item.product) : item.product;
+      if (pid && map[pid]) item.product = map[pid];
+    }
+  }
+}
+
 // Helper function to handle PDF/HTML response
 async function handleInvoiceResponse(res, order, format) {
   try {
@@ -35,9 +60,7 @@ async function handleInvoiceResponse(res, order, format) {
       allowHtmlFallback: format !== 'pdf'
     });
     
-    // Check if we got HTML fallback or actual PDF
     if (result && result.isHtml) {
-      // We got HTML fallback - IMPORTANT: Change file extension to .html
       console.log('≡ƒôä Serving HTML invoice as fallback (PDF generation failed)');
       
       if (format === 'pdf') {
@@ -46,7 +69,6 @@ async function handleInvoiceResponse(res, order, format) {
           code: 'PDF_UNAVAILABLE'
         });
       } else {
-        // Return JSON with HTML content
         res.json({
           order,
           invoice: {
@@ -64,10 +86,8 @@ async function handleInvoiceResponse(res, order, format) {
         });
       }
     } else if (result && Buffer.isBuffer(result)) {
-      // We got actual PDF buffer - verify it's valid
       console.log('≡ƒôä Serving PDF invoice');
       
-      // Check if buffer starts with %PDF (PDF magic number)
       const isPDF = result.slice(0, 4).toString() === '%PDF';
       
       if (!isPDF) {
@@ -96,7 +116,6 @@ async function handleInvoiceResponse(res, order, format) {
         });
       }
     } else {
-      // Something went wrong
       throw new Error('Invalid response from PDF generator');
     }
   } catch (error) {
@@ -126,9 +145,7 @@ async function handleInvoiceResponse(res, order, format) {
       }
     });
     
-    // Last resort: return basic HTML invoice that can be printed
     if (format !== 'pdf') {
-      // Generate a printable HTML invoice with .html extension
       const simpleHtml = `
         <!DOCTYPE html>
         <html>
@@ -335,7 +352,6 @@ async function handleInvoiceResponse(res, order, format) {
         </html>
       `;
       
-      // IMPORTANT: Set as HTML file, not PDF
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="invoice-${order.orderNumber}.html"`);
       res.send(simpleHtml);
@@ -364,14 +380,12 @@ async function handleInvoiceResponse(res, order, format) {
 // @access  Private
 router.get('/:orderId([0-9a-fA-F]{24})', async (req, res) => {
   try {
-    // Get token from either header or query parameter
     const token = req.header('Authorization')?.replace('Bearer ', '') || req.query.token;
     
     if (!token) {
       return res.status(401).json({ message: 'No token, authorization denied' });
     }
 
-    // Verify token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -379,22 +393,26 @@ router.get('/:orderId([0-9a-fA-F]{24})', async (req, res) => {
       return res.status(401).json({ message: 'Token is not valid' });
     }
 
-    const user = await User.findById(decoded.id).select('-password');
+    const user = await User.findById(decoded.id);
     
     if (!user) {
       return res.status(401).json({ message: 'User not found' });
     }
+
+    delete user.password;
 
     const order = await Order.findOne({
       $and: [
         { _id: req.params.orderId },
         getCustomerOrderQuery(user)
       ]
-    }).populate('items.product', 'name');
+    });
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    await populateItemsProduct(order);
 
     const format = req.query.format || 'json';
     await handleInvoiceResponse(res, order, format);
@@ -417,11 +435,13 @@ router.get('/guest/:orderNumber/:email', async (req, res) => {
       orderNumber,
       'customerInfo.email': email,
       isGuest: true
-    }).populate('items.product', 'name');
+    });
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    await populateItemsProduct(order);
 
     await handleInvoiceResponse(res, order, format);
     
@@ -440,11 +460,13 @@ router.post('/:orderId([0-9a-fA-F]{24})/send', auth, async (req, res) => {
         { _id: req.params.orderId },
         getCustomerOrderQuery(req.user)
       ]
-    }).populate('items.product', 'name');
+    });
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    await populateItemsProduct(order);
 
     const result = await pdfGenerator.generateInvoice(order, { allowHtmlFallback: false });
 
@@ -465,14 +487,12 @@ router.post('/:orderId([0-9a-fA-F]{24})/send', auth, async (req, res) => {
 // @access  Private
 router.get('/:orderId([0-9a-fA-F]{24})/download', async (req, res) => {
   try {
-    // Get token from either header or query parameter
     const token = req.header('Authorization')?.replace('Bearer ', '') || req.query.token;
     
     if (!token) {
       return res.status(401).json({ message: 'No token, authorization denied' });
     }
 
-    // Verify token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -480,24 +500,27 @@ router.get('/:orderId([0-9a-fA-F]{24})/download', async (req, res) => {
       return res.status(401).json({ message: 'Token is not valid' });
     }
 
-    const user = await User.findById(decoded.id).select('-password');
+    const user = await User.findById(decoded.id);
     
     if (!user) {
       return res.status(401).json({ message: 'User not found' });
     }
+
+    delete user.password;
 
     const order = await Order.findOne({
       $and: [
         { _id: req.params.orderId },
         getCustomerOrderQuery(user)
       ]
-    }).populate('items.product', 'name');
+    });
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    // Force PDF format for download
+    await populateItemsProduct(order);
+
     await handleInvoiceResponse(res, order, 'pdf');
     
   } catch (error) {
@@ -522,11 +545,7 @@ router.get('/', auth, async (req, res) => {
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    const orders = await Order.find(query)
-      .select('orderNumber total subtotal tax createdAt paymentStatus status customerInfo')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum);
+    const orders = await Order.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum);
 
     const total = await Order.countDocuments(query);
 
@@ -592,11 +611,8 @@ router.get('/admin/all', auth, authorize('order_manager', 'super_admin'), async 
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    const orders = await Order.find(query)
-      .populate('user', 'firstName lastName email')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum);
+    const orders = await Order.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum);
+    await MongoShim.populate(orders, 'user', User, 'firstName lastName email');
 
     const total = await Order.countDocuments(query);
 
@@ -637,12 +653,13 @@ router.get('/admin/all', auth, authorize('order_manager', 'super_admin'), async 
 // @access  Private (Admin only)
 router.post('/admin/:orderId/send', auth, authorize('order_manager', 'super_admin'), async (req, res) => {
   try {
-    const order = await Order.findById(req.params.orderId)
-      .populate('items.product', 'name');
+    const order = await Order.findById(req.params.orderId);
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    await populateItemsProduct(order);
 
     const result = await pdfGenerator.generateInvoice(order, { allowHtmlFallback: false });
 
@@ -663,12 +680,13 @@ router.post('/admin/:orderId/send', auth, authorize('order_manager', 'super_admi
 // @access  Private (Admin only)
 router.get('/admin/:orderId/pdf', auth, authorize('order_manager', 'super_admin'), async (req, res) => {
   try {
-    const order = await Order.findById(req.params.orderId)
-      .populate('items.product', 'name');
+    const order = await Order.findById(req.params.orderId);
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
+
+    await populateItemsProduct(order);
 
     await handleInvoiceResponse(res, order, 'pdf');
     
@@ -695,13 +713,14 @@ router.post('/admin/bulk-send', auth, authorize('order_manager', 'super_admin'),
 
     for (const orderId of orderIds) {
       try {
-        const order = await Order.findById(orderId)
-          .populate('items.product', 'name');
+        const order = await Order.findById(orderId);
 
         if (!order) {
           results.failed.push({ orderId, error: 'Order not found' });
           continue;
         }
+
+        await populateItemsProduct(order);
 
         const result = await pdfGenerator.generateInvoice(order, { allowHtmlFallback: false });
 
@@ -736,10 +755,9 @@ router.get('/stats/overview', auth, authorize('order_manager', 'super_admin'), a
     const pendingInvoices = await Order.countDocuments({ paymentStatus: 'pending' });
     const overdueInvoices = await Order.countDocuments({ 
       paymentStatus: { $in: ['payment_on_delivery', 'payment_on_collection'] },
-      createdAt: { $lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // 7 days old
+      createdAt: { $lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
     });
 
-    // Revenue calculations
     const totalRevenue = await Order.aggregate([
       { $match: { paymentStatus: 'paid' } },
       { $group: { _id: null, total: { $sum: '$total' } } }
@@ -750,27 +768,27 @@ router.get('/stats/overview', auth, authorize('order_manager', 'super_admin'), a
       { $group: { _id: null, total: { $sum: '$total' } } }
     ]);
 
-    // Monthly revenue trend (last 6 months)
     const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
-    const monthlyRevenue = await Order.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: sixMonthsAgo },
-          paymentStatus: 'paid'
-        }
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' }
-          },
-          revenue: { $sum: '$total' },
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { '_id.year': 1, '_id.month': 1 } }
-    ]);
+    const paidOrders = await Order.find({
+      createdAt: { $gte: sixMonthsAgo },
+      paymentStatus: 'paid'
+    });
+    const monthMap = {};
+    for (const o of paidOrders) {
+      const d = new Date(o.createdAt);
+      const year = d.getFullYear();
+      const month = d.getMonth() + 1;
+      const key = `${year}-${month}`;
+      if (!monthMap[key]) {
+        monthMap[key] = { _id: { year, month }, revenue: 0, count: 0 };
+      }
+      monthMap[key].revenue += (o.total || 0);
+      monthMap[key].count += 1;
+    }
+    const monthlyRevenue = Object.values(monthMap).sort((a, b) => {
+      if (a._id.year !== b._id.year) return a._id.year - b._id.year;
+      return a._id.month - b._id.month;
+    });
 
     res.json({
       totalInvoices,

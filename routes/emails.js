@@ -1,20 +1,31 @@
 ﻿const express = require('express');
 const Order = require('../models/Order');
+const Product = require('../models/Product');
 const { auth, authorize } = require('../middleware/auth');
 const emailService = require('../utils/emailService');
+const MongoShim = require('../utils/mongoshim');
 
 const router = express.Router();
 
-// @route   POST /api/emails/order-confirmation
-// @desc    Send order confirmation email
-// @access  Private (Admin only)
 router.post('/order-confirmation', auth, authorize('order_manager', 'super_admin'), async (req, res) => {
   try {
     const { orderId } = req.body;
 
-    const order = await Order.findById(orderId).populate('items.product', 'name');
+    const order = await Order.findById(orderId);
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (order.items && order.items.length) {
+      const productIds = [...new Set(order.items.map(item => item.product).filter(Boolean))];
+      const products = await Product.find({ _id: { $in: productIds } });
+      const productMap = {};
+      products.forEach(p => { productMap[p._id] = p; });
+      order.items.forEach(item => {
+        if (item.product && productMap[item.product]) {
+          item.product = productMap[item.product];
+        }
+      });
     }
 
     await emailService.sendOrderConfirmation(order);
@@ -25,16 +36,25 @@ router.post('/order-confirmation', auth, authorize('order_manager', 'super_admin
   }
 });
 
-// @route   POST /api/emails/invoice
-// @desc    Send invoice email
-// @access  Private (Admin only)
 router.post('/invoice', auth, authorize('order_manager', 'super_admin'), async (req, res) => {
   try {
     const { orderId } = req.body;
 
-    const order = await Order.findById(orderId).populate('items.product', 'name');
+    const order = await Order.findById(orderId);
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (order.items && order.items.length) {
+      const productIds = [...new Set(order.items.map(item => item.product).filter(Boolean))];
+      const products = await Product.find({ _id: { $in: productIds } });
+      const productMap = {};
+      products.forEach(p => { productMap[p._id] = p; });
+      order.items.forEach(item => {
+        if (item.product && productMap[item.product]) {
+          item.product = productMap[item.product];
+        }
+      });
     }
 
     const pdfGenerator = require('../utils/pdfGenerator');
@@ -50,9 +70,6 @@ router.post('/invoice', auth, authorize('order_manager', 'super_admin'), async (
   }
 });
 
-// @route   POST /api/emails/order-status
-// @desc    Send order status update email
-// @access  Private (Admin only)
 router.post('/order-status', auth, authorize('order_manager', 'super_admin'), async (req, res) => {
   try {
     const { orderId, status, message } = req.body;
@@ -87,9 +104,6 @@ router.post('/order-status', auth, authorize('order_manager', 'super_admin'), as
   }
 });
 
-// @route   POST /api/emails/custom
-// @desc    Send custom email
-// @access  Private (Admin only)
 router.post('/custom', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
     const { to, subject, message, isHtml = false } = req.body;
@@ -98,7 +112,6 @@ router.post('/custom', auth, authorize('content_manager', 'super_admin'), async 
       return res.status(400).json({ message: 'To, subject, and message are required' });
     }
 
-    // Validate email addresses
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const recipients = Array.isArray(to) ? to : [to];
     
@@ -122,9 +135,6 @@ router.post('/custom', auth, authorize('content_manager', 'super_admin'), async 
   }
 });
 
-// @route   POST /api/emails/newsletter
-// @desc    Send newsletter email
-// @access  Private (Admin only)
 router.post('/newsletter', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
     const { subject, content, userType = 'all' } = req.body;
@@ -142,7 +152,7 @@ router.post('/newsletter', auth, authorize('content_manager', 'super_admin'), as
       query.role = 'business';
     }
 
-    const users = await User.find(query).select('email firstName lastName');
+    const users = await User.find(query);
 
     if (users.length === 0) {
       return res.status(404).json({ message: 'No users found for the specified criteria' });
@@ -175,9 +185,6 @@ router.post('/newsletter', auth, authorize('content_manager', 'super_admin'), as
   }
 });
 
-// @route   POST /api/emails/bulk-order-update
-// @desc    Send bulk order status updates
-// @access  Private (Admin only)
 router.post('/bulk-order-update', auth, authorize('order_manager', 'super_admin'), async (req, res) => {
   try {
     const { orderIds, status, message } = req.body;
@@ -236,9 +243,6 @@ router.post('/bulk-order-update', auth, authorize('order_manager', 'super_admin'
   }
 });
 
-// @route   POST /api/emails/test
-// @desc    Send test email
-// @access  Private (Admin only)
 router.post('/test', auth, authorize('super_admin'), async (req, res) => {
   try {
     const { to } = req.body;
@@ -260,9 +264,6 @@ router.post('/test', auth, authorize('super_admin'), async (req, res) => {
   }
 });
 
-// @route   GET /api/emails/templates
-// @desc    Get email templates
-// @access  Private (Admin only)
 router.get('/templates', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
     const templates = [
@@ -310,13 +311,8 @@ router.get('/templates', auth, authorize('content_manager', 'super_admin'), asyn
   }
 });
 
-// @route   GET /api/emails/stats
-// @desc    Get email statistics
-// @access  Private (Admin only)
 router.get('/stats', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
-    // In a real implementation, you would track email sends in a database
-    // For now, we'll return mock statistics
     const stats = {
       totalSent: 1250,
       deliveryRate: 98.5,

@@ -57,17 +57,18 @@ async function populateItemsProduct(docs) {
 async function handleInvoiceResponse(res, order, format) {
   try {
     const result = await pdfGenerator.generateInvoice(order, {
-      allowHtmlFallback: format !== 'pdf'
+      allowHtmlFallback: true
     });
     
     if (result && result.isHtml) {
-      console.log('≡ƒôä Serving HTML invoice as fallback (PDF generation failed)');
+      console.log('≡ƒôä Serving HTML invoice as fallback (PDF generation unavailable)');
       
       if (format === 'pdf') {
-        return res.status(503).json({
-          message: 'Invoice PDF is temporarily unavailable. Please try again shortly.',
-          code: 'PDF_UNAVAILABLE'
-        });
+        const htmlWithPrint = result.html.replace('</body>',
+          '<script>window.onload=function(){setTimeout(function(){window.print()},500)}</script></body>');
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="invoice-${order.orderNumber}.html"`);
+        res.send(htmlWithPrint);
       } else {
         res.json({
           order,
@@ -89,7 +90,6 @@ async function handleInvoiceResponse(res, order, format) {
       console.log('≡ƒôä Serving PDF invoice');
       
       const isPDF = result.slice(0, 4).toString() === '%PDF';
-      
       if (!isPDF) {
         console.error('ΓÜá∩╕Å Generated buffer is not a valid PDF');
         throw new Error('Invalid PDF generated');
@@ -122,11 +122,20 @@ async function handleInvoiceResponse(res, order, format) {
     console.error('Γ¥î Invoice generation failed completely:', error);
 
     if (format === 'pdf') {
-      return res.status(503).json({
-        message: 'Failed to generate invoice PDF. Please try again shortly.',
-        code: 'PDF_GENERATION_FAILED',
-        error: error.message
-      });
+      try {
+        const html = pdfGenerator.generateInvoiceHTML(order);
+        const htmlWithPrint = html.replace('</body>',
+          '<script>window.onload=function(){setTimeout(function(){window.print()},500)}</script></body>');
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="invoice-${order.orderNumber}.html"`);
+        return res.send(htmlWithPrint);
+      } catch (htmlError) {
+        return res.status(503).json({
+          message: 'Failed to generate invoice. Please try again shortly.',
+          code: 'INVOICE_GENERATION_FAILED',
+          error: error.message
+        });
+      }
     }
 
     return res.status(500).json({
@@ -141,237 +150,10 @@ async function handleInvoiceResponse(res, order, format) {
         tax: order.tax,
         total: order.total,
         isPdfAvailable: false,
+        message: 'Invoice generation failed',
         error: error.message
       }
     });
-    
-    if (format !== 'pdf') {
-      const simpleHtml = `
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="utf-8">
-          
-          <title>Invoice ${order.orderNumber}</title>
-          <style>
-            @page { size: A4; margin: 20mm; }
-            body { 
-              font-family: 'Segoe UI', Arial, sans-serif; 
-              margin: 0;
-              padding: 20px;
-              color: #333;
-            }
-            .invoice-container {
-              max-width: 800px;
-              margin: 0 auto;
-            }
-            .header {
-              background: linear-gradient(135deg, #28378a 0%, #1e2870 100%);
-              color: white;
-              padding: 30px;
-              border-radius: 10px 10px 0 0;
-              margin-bottom: 0;
-            }
-            .company-name {
-              font-size: 32px;
-              font-weight: bold;
-              color: #f6f451;
-              margin-bottom: 10px;
-            }
-            .invoice-title {
-              font-size: 24px;
-              margin: 20px 0;
-            }
-            .content {
-              border: 2px solid #28378a;
-              border-top: none;
-              padding: 30px;
-              border-radius: 0 0 10px 10px;
-            }
-            table { 
-              width: 100%; 
-              border-collapse: collapse; 
-              margin: 20px 0; 
-            }
-            th, td { 
-              padding: 12px; 
-              text-align: left; 
-            }
-            th { 
-              background-color: #f8f9fa;
-              border-bottom: 2px solid #28378a;
-              color: #28378a;
-              font-weight: 600;
-            }
-            td { 
-              border-bottom: 1px solid #dee2e6; 
-            }
-            .total-row {
-              font-weight: bold;
-              font-size: 1.2em;
-              background-color: #f8f9fa;
-            }
-            .total-row td {
-              padding: 15px 12px;
-              border-bottom: none;
-              color: #28378a;
-            }
-            .info-section {
-              display: flex;
-              justify-content: space-between;
-              margin: 20px 0;
-            }
-            .info-box {
-              flex: 1;
-              padding: 15px;
-              background-color: #f8f9fa;
-              border-left: 4px solid #f6f451;
-              margin-right: 20px;
-            }
-            .info-box:last-child {
-              margin-right: 0;
-            }
-            .info-label {
-              font-weight: 600;
-              color: #666;
-              margin-bottom: 5px;
-            }
-            .print-notice {
-              background-color: #fff3cd;
-              border: 1px solid #ffc107;
-              padding: 15px;
-              margin: 20px 0;
-              border-radius: 5px;
-              text-align: center;
-            }
-            @media print {
-              .print-notice { display: none !important; }
-              body { margin: 0; }
-              .header { 
-                background: #28378a !important;
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
-              }
-            }
-            .btn-print {
-              background: #28378a;
-              color: white;
-              padding: 10px 20px;
-              border: none;
-              border-radius: 5px;
-              cursor: pointer;
-              font-size: 16px;
-              margin: 10px;
-            }
-            .btn-print:hover {
-              background: #1e2870;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="invoice-container">
-            <div class="print-notice">
-              <strong>ΓÜá∩╕Å HTML Invoice</strong><br>
-              This is a printable HTML invoice. Click the button below to print or save as PDF using your browser's print function.
-              <br>
-              <button class="btn-print" onclick="window.print()">≡ƒû¿∩╕Å Print Invoice</button>
-            </div>
-            
-            <div class="header">
-              <div class="company-name">MINEAZY</div>
-              <div>Mining Equipment & Solutions</div>
-              <div style="margin-top: 10px; font-size: 14px;">
-                15 Plumtree Road, Belmont, Bulawayo, Zimbabwe<br>
-                ≡ƒô₧ +263-712-290-046 | Γ£ë∩╕Å info@mineazy.co.zw
-              </div>
-            </div>
-            
-            <div class="content">
-              <h1 class="invoice-title">Invoice #${order.orderNumber}</h1>
-              
-              <div class="info-section">
-                <div class="info-box">
-                  <div class="info-label">BILL TO</div>
-                  <strong>${order.customerInfo.firstName} ${order.customerInfo.lastName}</strong><br>
-                  ${order.customerInfo.email}<br>
-                  ${order.customerInfo.phone}<br>
-                  ${order.customerInfo.address.street}<br>
-                  ${order.customerInfo.address.city}, ${order.customerInfo.address.country}
-                </div>
-                <div class="info-box">
-                  <div class="info-label">INVOICE DETAILS</div>
-                  <strong>Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}<br>
-                  <strong>Order #:</strong> ${order.orderNumber}<br>
-                  <strong>Payment:</strong> ${order.paymentMethod.replace(/_/g, ' ')}<br>
-                  <strong>Status:</strong> ${order.paymentStatus.replace(/_/g, ' ')}
-                </div>
-              </div>
-              
-              <table>
-                <thead>
-                  <tr>
-                    <th>Item</th>
-                    <th style="text-align: center;">Quantity</th>
-                    <th style="text-align: right;">Unit Price</th>
-                    <th style="text-align: right;">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${order.items.map(item => `
-                    <tr>
-                      <td>
-                        <strong>${item.name}</strong><br>
-                        <small style="color: #666;">SKU: ${item.sku}</small>
-                      </td>
-                      <td style="text-align: center;">${item.quantity}</td>
-                      <td style="text-align: right;">${item.price.toFixed(2)}</td>
-                      <td style="text-align: right;">${item.total.toFixed(2)}</td>
-                    </tr>
-                  `).join('')}
-                  <tr>
-                    <td colspan="3" style="text-align: right; padding-top: 20px;"><strong>Subtotal:</strong></td>
-                    <td style="text-align: right; padding-top: 20px;">${order.subtotal.toFixed(2)}</td>
-                  </tr>
-                  <tr>
-                    <td colspan="3" style="text-align: right;"><strong>Tax (VAT 15.5%):</strong></td>
-                    <td style="text-align: right;">${order.tax.toFixed(2)}</td>
-                  </tr>
-                  <tr class="total-row">
-                    <td colspan="3" style="text-align: right;"><strong>TOTAL AMOUNT:</strong></td>
-                    <td style="text-align: right; font-size: 1.3em;">${order.total.toFixed(2)}</td>
-                  </tr>
-                </tbody>
-              </table>
-              
-              <div style="margin-top: 40px; padding-top: 20px; border-top: 2px solid #dee2e6; text-align: center; color: #666;">
-                <strong>Thank you for your business!</strong><br>
-                For questions about this invoice, please contact accounts@mineazy.co.zw
-              </div>
-            </div>
-          </div>
-        </body>
-        </html>
-      `;
-      
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="invoice-${order.orderNumber}.html"`);
-      res.send(simpleHtml);
-    } else {
-      res.status(500).json({ 
-        message: 'Invoice generation failed. Please try again later.',
-        order,
-        invoice: {
-          number: order.orderNumber,
-          date: order.createdAt,
-          customer: order.customerInfo,
-          items: order.items,
-          subtotal: order.subtotal,
-          tax: order.tax,
-          total: order.total,
-          isPdfAvailable: false,
-          error: 'PDF generation service temporarily unavailable'
-        }
-      });
-    }
   }
 }
 

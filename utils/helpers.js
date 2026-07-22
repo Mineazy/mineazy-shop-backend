@@ -313,6 +313,56 @@ class Helpers {
       return false;
     }
   }
+
+  // Generate meta title from name (truncated, cleaned)
+  static generateMetaTitle(text, maxLength = 60) {
+    if (!text) return '';
+    const cleaned = text.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    if (cleaned.length <= maxLength) return cleaned;
+    const truncated = cleaned.substring(0, maxLength);
+    const lastSpace = truncated.lastIndexOf(' ');
+    return lastSpace > maxLength * 0.8
+      ? truncated.substring(0, lastSpace)
+      : truncated;
+  }
+
+  // Auto-generate SEO fields for a document
+  static generateSeoFields(doc, type = 'product') {
+    const seo = {};
+    const siteName = 'Mineazy';
+
+    if (type === 'product') {
+      seo.metaTitle = doc.metaTitle || `${doc.name} | Mining Equipment | ${siteName}`;
+      seo.metaDescription = doc.metaDescription || this.generateMetaDescription(
+        doc.shortDescription || doc.description || doc.name,
+        160
+      );
+      seo.metaKeywords = doc.metaKeywords || (doc.tags ? doc.tags.join(', ') : '');
+    } else if (type === 'blog') {
+      seo.metaTitle = doc.metaTitle || `${doc.title} | Blog | ${siteName}`;
+      seo.metaDescription = doc.metaDescription || this.generateMetaDescription(
+        doc.excerpt || doc.content || doc.title,
+        160
+      );
+      seo.metaKeywords = doc.metaKeywords || (doc.tags ? doc.tags.join(', ') : '');
+    } else if (type === 'category') {
+      seo.metaTitle = doc.metaTitle || `${doc.name} | Categories | ${siteName}`;
+      seo.metaDescription = doc.metaDescription || this.generateMetaDescription(
+        doc.description || doc.name,
+        160
+      );
+      seo.metaKeywords = doc.metaKeywords || '';
+    } else if (type === 'page') {
+      seo.metaTitle = doc.metaTitle || `${doc.title} | ${siteName}`;
+      seo.metaDescription = doc.metaDescription || this.generateMetaDescription(
+        doc.content || doc.title,
+        160
+      );
+      seo.metaKeywords = doc.metaKeywords || '';
+    }
+
+    return seo;
+  }
 }
 
 module.exports = Helpers;

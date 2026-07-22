@@ -13,7 +13,10 @@ const Product = new MongoShim('products', {
     stockQuantity: { default: 0 },
     isActive: { default: true },
     featured: { default: false },
-    viewCount: { default: 0 }
+    viewCount: { default: 0 },
+    metaTitle: { default: '' },
+    metaDescription: { default: '' },
+    metaKeywords: { default: '' }
   },
   preSave: (doc, isNew) => {
     if (doc.name && !doc.slug) {

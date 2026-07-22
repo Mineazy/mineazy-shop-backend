@@ -1,11 +1,17 @@
 ﻿const csv = require('csv-parser');
 const fs = require('fs');
+const xss = require('xss');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const slugify = require('slugify');
+const { isValidImageUrl } = require('./productImageUtils');
 
 class CSVImporter {
   constructor() {
+    this.results = null;
+  }
+
+  _resetResults() {
     this.results = {
       success: false,
       imported: 0,
@@ -20,15 +26,19 @@ class CSVImporter {
    * @param {string} filePath - Path to CSV file
    * @param {boolean} updateExisting - Whether to update existing products (default: true)
    * @param {array} fieldsToUpdate - Specific fields to update (if empty, updates all provided fields)
+   * @param {object} options - { concurrency: 5, errorThreshold: 0 }
    */
-  async importProducts(filePath, updateExisting = true, fieldsToUpdate = []) {
+  async importProducts(filePath, updateExisting = true, fieldsToUpdate = [], options = {}) {
+    const { concurrency = 5, errorThreshold = 0 } = options;
+    this._resetResults();
+
     return new Promise((resolve, reject) => {
       const products = [];
       let rowNumber = 1;
 
       fs.createReadStream(filePath)
         .pipe(csv({
-          mapHeaders: ({ header, index }) => header.trim().toLowerCase()
+          mapHeaders: ({ header }) => header.trim().toLowerCase()
         }))
         .on('data', (row) => {
           rowNumber++;
@@ -46,12 +56,14 @@ class CSVImporter {
         })
         .on('end', async () => {
           try {
-            if (this.results.errors.length > 0 && this.results.errors.length > products.length * 0.5) {
+            if (errorThreshold > 0 &&
+                this.results.errors.length > 0 &&
+                this.results.errors.length > products.length * errorThreshold) {
               this.results.success = false;
               return resolve(this.results);
             }
 
-            await this.processProductsBatch(products, updateExisting, fieldsToUpdate);
+            await this._processProductsBatched(products, updateExisting, fieldsToUpdate, concurrency);
             this.results.success = true;
             resolve(this.results);
           } catch (error) {
@@ -75,7 +87,6 @@ class CSVImporter {
   }
 
   validateAndProcessRow(row, rowNumber, fieldsToUpdate = []) {
-    // SKU is ALWAYS required to identify the product
     if (!row.sku || row.sku.toString().trim() === '') {
       throw new Error('SKU is required to identify products');
     }
@@ -85,39 +96,33 @@ class CSVImporter {
       throw new Error('SKU must be between 3 and 20 characters');
     }
 
-    // Build product data object with only provided fields
     const productData = {
       sku: sku,
       rowNumber: rowNumber,
-      providedFields: [] // Track which fields were provided
+      providedFields: []
     };
 
-    // Helper to check if field should be processed
     const shouldProcess = (fieldName) => {
       return fieldsToUpdate.length === 0 || fieldsToUpdate.includes(fieldName);
     };
 
-    // Name (only required for new products)
     if (row.name && row.name.trim() !== '') {
       if (shouldProcess('name')) {
-        productData.name = row.name.trim();
+        productData.name = xss(row.name.trim());
         productData.providedFields.push('name');
       }
     }
 
-    // Description
     if (row.description && shouldProcess('description')) {
-      productData.description = row.description.trim();
+      productData.description = xss(row.description.trim());
       productData.providedFields.push('description');
     }
 
-    // Short Description
     if (row.shortdescription && shouldProcess('shortDescription')) {
-      productData.shortDescription = row.shortdescription.trim();
+      productData.shortDescription = xss(row.shortdescription.trim());
       productData.providedFields.push('shortDescription');
     }
 
-    // Price
     if (row.price && row.price.toString().trim() !== '') {
       if (shouldProcess('price')) {
         const price = parseFloat(row.price);
@@ -129,7 +134,6 @@ class CSVImporter {
       }
     }
 
-    // Sale Price
     if (row.saleprice && shouldProcess('salePrice')) {
       const salePrice = parseFloat(row.saleprice);
       if (!isNaN(salePrice) && salePrice >= 0) {
@@ -138,13 +142,11 @@ class CSVImporter {
       }
     }
 
-    // Category
     if (row.category && row.category.trim() !== '' && shouldProcess('category')) {
-      productData.categoryName = row.category.trim();
+      productData.categoryName = xss(row.category.trim());
       productData.providedFields.push('category');
     }
 
-    // Stock Quantity
     if (row.stockquantity !== undefined && row.stockquantity !== '' && shouldProcess('stockQuantity')) {
       const stock = parseInt(row.stockquantity);
       if (!isNaN(stock)) {
@@ -153,13 +155,11 @@ class CSVImporter {
       }
     }
 
-    // In Stock (boolean)
     if (row.instock !== undefined && row.instock !== '' && shouldProcess('inStock')) {
       productData.inStock = this.parseBoolean(row.instock);
       productData.providedFields.push('inStock');
     }
 
-    // Weight
     if (row.weight && shouldProcess('weight')) {
       const weight = parseFloat(row.weight);
       if (!isNaN(weight)) {
@@ -168,37 +168,43 @@ class CSVImporter {
       }
     }
 
-    // Dimensions
     if (row.dimensions && shouldProcess('dimensions')) {
+      let dimensions;
       try {
-        const dimensions = JSON.parse(row.dimensions);
-        if (dimensions.length && dimensions.width && dimensions.height) {
-          productData.dimensions = dimensions;
-          productData.providedFields.push('dimensions');
-        }
+        dimensions = JSON.parse(row.dimensions);
       } catch (error) {
         throw new Error('Invalid dimensions format. Use JSON: {"length": 10, "width": 5, "height": 3}');
       }
+      if (typeof dimensions.length !== 'number' ||
+          typeof dimensions.width !== 'number' ||
+          typeof dimensions.height !== 'number') {
+        throw new Error('Dimensions must include numeric length, width, and height keys');
+      }
+      productData.dimensions = dimensions;
+      productData.providedFields.push('dimensions');
     }
 
-    // Tags
     if (row.tags && shouldProcess('tags')) {
-      productData.tags = row.tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
+      productData.tags = row.tags.split(',').map(tag => xss(tag.trim())).filter(tag => tag.length > 0);
       productData.providedFields.push('tags');
     }
 
-    // Specifications
     if (row.specifications && shouldProcess('specifications')) {
       let specifications = {};
       try {
-        if (row.specifications.startsWith('{')) {
+        if (row.specifications.trim().startsWith('{')) {
           specifications = JSON.parse(row.specifications);
+          for (const key of Object.keys(specifications)) {
+            if (typeof specifications[key] === 'string') {
+              specifications[key] = xss(specifications[key]);
+            }
+          }
         } else {
           const specs = row.specifications.split(',');
           specs.forEach(spec => {
             const [key, value] = spec.split(':');
             if (key && value) {
-              specifications[key.trim()] = value.trim();
+              specifications[xss(key.trim())] = xss(value.trim());
             }
           });
         }
@@ -209,22 +215,39 @@ class CSVImporter {
       }
     }
 
-    // Images
     if (row.images && shouldProcess('images')) {
-      productData.images = row.images.split(',').map(img => img.trim()).filter(img => img.length > 0);
+      const urls = row.images.split(',').map(img => img.trim()).filter(img => img.length > 0);
+      const invalidUrls = urls.filter(url => !isValidImageUrl(url));
+      if (invalidUrls.length > 0) {
+        throw new Error(`Invalid image URL(s): ${invalidUrls.join(', ')}`);
+      }
+      productData.images = urls;
       productData.providedFields.push('images');
     }
 
-    // Featured
     if (row.featured !== undefined && row.featured !== '' && shouldProcess('featured')) {
       productData.featured = this.parseBoolean(row.featured);
       productData.providedFields.push('featured');
     }
 
-    // Is Active
     if (row.isactive !== undefined && row.isactive !== '' && shouldProcess('isActive')) {
       productData.isActive = this.parseBoolean(row.isactive);
       productData.providedFields.push('isActive');
+    }
+
+    if (row.metatitle && shouldProcess('metaTitle')) {
+      productData.metaTitle = xss(row.metatitle.trim());
+      productData.providedFields.push('metaTitle');
+    }
+
+    if (row.metadescription && shouldProcess('metaDescription')) {
+      productData.metaDescription = xss(row.metadescription.trim());
+      productData.providedFields.push('metaDescription');
+    }
+
+    if (row.metakeywords && shouldProcess('metaKeywords')) {
+      productData.metaKeywords = xss(row.metakeywords.trim());
+      productData.providedFields.push('metaKeywords');
     }
 
     return productData;
@@ -235,20 +258,35 @@ class CSVImporter {
     return ['true', '1', 'yes', 'y'].includes(val);
   }
 
-  async processProductsBatch(products, updateExisting, fieldsToUpdate) {
-    const batchSize = 10;
-    
-    for (let i = 0; i < products.length; i += batchSize) {
-      const batch = products.slice(i, i + batchSize);
-      await Promise.all(batch.map(productData => 
-        this.createOrUpdateProduct(productData, updateExisting, fieldsToUpdate)
+  async _processProductsBatched(products, updateExisting, fieldsToUpdate, concurrency) {
+    for (let i = 0; i < products.length; i += concurrency) {
+      const batch = products.slice(i, i + concurrency);
+      await Promise.all(batch.map(pd => 
+        this.createOrUpdateProduct(pd, updateExisting, fieldsToUpdate)
       ));
     }
   }
 
+  async _lookupCategory(categoryName) {
+    if (!categoryName) return null;
+    const categorySlug = slugify(categoryName, { lower: true });
+    let category = await Category.findOne({ 
+      $or: [
+        { name: categoryName },
+        { slug: categorySlug }
+      ]
+    });
+    if (!category) {
+      category = await Category.insert({
+        name: categoryName,
+        slug: categorySlug
+      });
+    }
+    return category;
+  }
+
   async createOrUpdateProduct(productData, updateExisting, fieldsToUpdate) {
     try {
-      // Check if product exists
       const existingProduct = await Product.findOne({ sku: productData.sku });
 
       if (existingProduct) {
@@ -261,11 +299,11 @@ class CSVImporter {
           return;
         }
 
-        // Update existing product with only provided fields
         let updated = false;
 
         if (productData.name) {
           existingProduct.name = productData.name;
+          existingProduct.slug = slugify(productData.name, { lower: true });
           updated = true;
         }
 
@@ -290,16 +328,11 @@ class CSVImporter {
         }
 
         if (productData.categoryName) {
-          let category = await Category.findOne({ name: productData.categoryName });
-          if (!category) {
-            category = new Category({
-              name: productData.categoryName,
-              slug: slugify(productData.categoryName, { lower: true })
-            });
-            await category.save();
+          const category = await this._lookupCategory(productData.categoryName);
+          if (category) {
+            existingProduct.category = category._id;
+            updated = true;
           }
-          existingProduct.category = category._id;
-          updated = true;
         }
 
         if (productData.stockQuantity !== undefined) {
@@ -347,10 +380,25 @@ class CSVImporter {
           updated = true;
         }
 
+        if (productData.metaTitle !== undefined) {
+          existingProduct.metaTitle = productData.metaTitle;
+          updated = true;
+        }
+
+        if (productData.metaDescription !== undefined) {
+          existingProduct.metaDescription = productData.metaDescription;
+          updated = true;
+        }
+
+        if (productData.metaKeywords !== undefined) {
+          existingProduct.metaKeywords = productData.metaKeywords;
+          updated = true;
+        }
+
         if (updated) {
-          await existingProduct.save();
+          await Product.update({ _id: existingProduct._id }, existingProduct);
           this.results.updated++;
-          console.log(`Γ£à Updated: ${productData.sku} (${productData.providedFields.join(', ')})`);
+          console.log(`Updated: ${productData.sku} (${productData.providedFields.join(', ')})`);
         } else {
           this.results.skipped.push({
             row: productData.rowNumber,
@@ -360,7 +408,6 @@ class CSVImporter {
         }
 
       } else {
-        // Create new product - validate required fields
         if (!productData.name) {
           this.results.errors.push({
             row: productData.rowNumber,
@@ -388,18 +435,17 @@ class CSVImporter {
           return;
         }
 
-        // Find or create category
-        let category = await Category.findOne({ name: productData.categoryName });
+        const category = await this._lookupCategory(productData.categoryName);
         if (!category) {
-          category = new Category({
-            name: productData.categoryName,
-            slug: slugify(productData.categoryName, { lower: true })
+          this.results.errors.push({
+            row: productData.rowNumber,
+            sku: productData.sku,
+            error: `Failed to find or create category: ${productData.categoryName}`
           });
-          await category.save();
+          return;
         }
 
-        // Create new product
-        const product = new Product({
+        await Product.insert({
           name: productData.name,
           description: productData.description || '',
           shortDescription: productData.shortDescription || '',
@@ -415,12 +461,13 @@ class CSVImporter {
           specifications: productData.specifications || {},
           images: productData.images || [],
           featured: productData.featured || false,
-          isActive: productData.isActive !== undefined ? productData.isActive : true
+          isActive: productData.isActive !== undefined ? productData.isActive : true,
+          metaTitle: productData.metaTitle || '',
+          metaDescription: productData.metaDescription || '',
+          metaKeywords: productData.metaKeywords || ''
         });
-
-        await product.save();
         this.results.imported++;
-        console.log(`Γ£à Created: ${productData.sku}`);
+        console.log(`Created: ${productData.sku}`);
       }
 
     } catch (error) {
@@ -434,7 +481,6 @@ class CSVImporter {
 
   generateSampleCSV(updateOnly = false) {
     if (updateOnly) {
-      // Sample CSV for updates only
       const sampleData = [
         {
           sku: 'SAMPLE001',
@@ -451,7 +497,7 @@ class CSVImporter {
 
       const headers = ['sku', 'stockQuantity', 'price', 'inStock'];
       let csvContent = headers.join(',') + '\n';
-      
+
       sampleData.forEach(row => {
         const values = headers.map(header => row[header] !== undefined ? row[header] : '');
         csvContent += values.join(',') + '\n';
@@ -460,7 +506,6 @@ class CSVImporter {
       return csvContent;
     }
 
-    // Full sample CSV for creating products
     const sampleData = [
       {
         name: 'Sample Product',
@@ -478,18 +523,22 @@ class CSVImporter {
         images: 'https://example.com/image1.jpg,https://example.com/image2.jpg',
         featured: false,
         isActive: true,
-        inStock: true
+        inStock: true,
+        metaTitle: 'Sample Product | Mining Equipment | Mineazy',
+        metaDescription: 'This is a sample product description for mining equipment',
+        metaKeywords: 'mining,equipment,sample'
       }
     ];
 
     const headers = [
       'name', 'description', 'shortDescription', 'price', 'salePrice', 'sku',
       'category', 'stockQuantity', 'weight', 'dimensions', 'tags',
-      'specifications', 'images', 'featured', 'isActive', 'inStock'
+      'specifications', 'images', 'featured', 'isActive', 'inStock',
+      'metaTitle', 'metaDescription', 'metaKeywords'
     ];
 
     let csvContent = headers.join(',') + '\n';
-    
+
     sampleData.forEach(row => {
       const values = headers.map(header => {
         let value = row[header];
@@ -525,9 +574,12 @@ class CSVImporter {
         { field: 'dimensions', type: 'json', description: 'Product dimensions: {"length": 10, "width": 5, "height": 3}' },
         { field: 'tags', type: 'string', description: 'Comma-separated tags: tag1,tag2,tag3' },
         { field: 'specifications', type: 'json/string', description: 'JSON object or key:value pairs separated by commas' },
-        { field: 'images', type: 'string', description: 'Comma-separated image URLs' },
+        { field: 'images', type: 'string', description: 'Comma-separated image URLs (must be valid http/https URLs)' },
         { field: 'featured', type: 'boolean', description: 'true/false - whether product is featured' },
-        { field: 'isActive', type: 'boolean', description: 'true/false - whether product is active' }
+        { field: 'isActive', type: 'boolean', description: 'true/false - whether product is active' },
+        { field: 'metaTitle', type: 'string', description: 'SEO meta title (overrides auto-generated)' },
+        { field: 'metaDescription', type: 'string', description: 'SEO meta description (overrides auto-generated)' },
+        { field: 'metaKeywords', type: 'string', description: 'SEO meta keywords (comma-separated)' }
       ],
       importModes: [
         {
@@ -565,9 +617,11 @@ class CSVImporter {
         'For updates: only include fields you want to change',
         'For new products: include name, price, and category at minimum',
         'Empty cells are ignored during updates',
-        'Category will be created if it doesn\'t exist',
+        'Category will be matched by name or slug, created if not found',
         'Boolean fields accept: true/false, 1/0, yes/no',
-        'Update mode is enabled by default'
+        'Image URLs must be valid http/https URLs',
+        'Update mode is enabled by default',
+        'Pass ?concurrency=N to control parallel processing (default: 5, max: 20)'
       ]
     };
   }

@@ -41,6 +41,7 @@ router.post('/', auth, authorize('content_manager', 'super_admin'), async (req, 
       content,
       metaTitle,
       metaDescription,
+      metaKeywords,
       isPublished = true
     } = req.body;
 
@@ -53,6 +54,7 @@ router.post('/', auth, authorize('content_manager', 'super_admin'), async (req, 
       content,
       metaTitle,
       metaDescription,
+      metaKeywords,
       isPublished,
       author: req.user._id
     });
@@ -75,6 +77,7 @@ router.put('/:id', auth, authorize('content_manager', 'super_admin'), async (req
       content,
       metaTitle,
       metaDescription,
+      metaKeywords,
       isPublished
     } = req.body;
 
@@ -85,8 +88,9 @@ router.put('/:id', auth, authorize('content_manager', 'super_admin'), async (req
 
     page.title = title || page.title;
     page.content = content || page.content;
-    page.metaTitle = metaTitle || page.metaTitle;
-    page.metaDescription = metaDescription || page.metaDescription;
+    if (metaTitle !== undefined) page.metaTitle = metaTitle;
+    if (metaDescription !== undefined) page.metaDescription = metaDescription;
+    if (metaKeywords !== undefined) page.metaKeywords = metaKeywords;
     page.isPublished = isPublished !== undefined ? isPublished : page.isPublished;
 
     await Page.update({ _id: page._id }, page);

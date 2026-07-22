@@ -191,7 +191,7 @@ router.get('/slug/:slug', async (req, res) => {
 // @access  Private (Admin only)
 router.post('/', auth, authorize('inventory_manager', 'super_admin'), upload.single('image'), categoryValidation, async (req, res) => {
   try {
-    const { name, description, parent, sortOrder = 0 } = req.body;
+    const { name, description, parent, sortOrder = 0, metaTitle, metaDescription, metaKeywords } = req.body;
 
     // Check if parent category exists
     if (parent) {
@@ -205,7 +205,10 @@ router.post('/', auth, authorize('inventory_manager', 'super_admin'), upload.sin
       name,
       description,
       parent: parent || null,
-      sortOrder: parseInt(sortOrder)
+      sortOrder: parseInt(sortOrder),
+      metaTitle,
+      metaDescription,
+      metaKeywords
     };
 
     if (req.file) {
@@ -230,7 +233,7 @@ router.post('/', auth, authorize('inventory_manager', 'super_admin'), upload.sin
 // @access  Private (Admin only)
 router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.single('image'), async (req, res) => {
   try {
-    const { name, description, parent, sortOrder, isActive } = req.body;
+    const { name, description, parent, sortOrder, isActive, metaTitle, metaDescription, metaKeywords } = req.body;
 
     const category = await Category.findById(req.params.id);
     if (!category) {
@@ -256,6 +259,9 @@ router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.s
     if (parent !== undefined) category.parent = parent || null;
     if (sortOrder !== undefined) category.sortOrder = parseInt(sortOrder);
     if (isActive !== undefined) category.isActive = isActive;
+    if (metaTitle !== undefined) category.metaTitle = metaTitle;
+    if (metaDescription !== undefined) category.metaDescription = metaDescription;
+    if (metaKeywords !== undefined) category.metaKeywords = metaKeywords;
 
     if (req.file) {
       category.image = `/uploads/categories/${req.file.filename}`;

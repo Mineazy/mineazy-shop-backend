@@ -73,11 +73,12 @@ router.post('/items', optionalAuth, async (req, res) => {
         existingItem.quantity = product.stockQuantity;
       }
     } else {
+      const itemPrice = product.salePrice && product.salePrice < product.price ? product.salePrice : product.price;
       cart.items = [...(cart.items || []), {
         _id: genItemId(),
         product: productId,
         quantity,
-        price: product.effectivePrice
+        price: itemPrice
       }];
     }
 
@@ -337,7 +338,7 @@ router.post('/validate', optionalAuth, async (req, res) => {
         continue;
       }
 
-      const currentPrice = product.effectivePrice;
+      const currentPrice = product.salePrice && product.salePrice < product.price ? product.salePrice : product.price;
       if (item.price !== currentPrice) {
         item.price = currentPrice;
         validationResults.updates.push({

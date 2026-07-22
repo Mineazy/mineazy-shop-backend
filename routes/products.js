@@ -8,7 +8,8 @@ const multer = require('multer');
 const path = require('path');
 const csvImporter = require('../utils/csvImporter');
 const fs = require('fs');
-const { sanitizeProductRecord, sanitizeProductImages } = require('../utils/productImageUtils');
+const fsp = require('fs').promises;
+const { sanitizeProductRecord, sanitizeProductImages, isValidImageUrl } = require('../utils/productImageUtils');
 const MongoShim = require('../utils/mongoshim');
 
 const router = express.Router();
@@ -24,17 +25,6 @@ const parseJsonArrayField = (value) => {
     return Array.isArray(parsed) ? parsed : [];
   } catch (_error) {
     return [value];
-  }
-};
-
-const isValidImageUrl = (value) => {
-  if (typeof value !== 'string') return false;
-
-  try {
-    const url = new URL(value.trim());
-    return ['http:', 'https:'].includes(url.protocol);
-  } catch (_error) {
-    return false;
   }
 };
 
@@ -71,7 +61,8 @@ const csvUpload = multer({
 const exportableProductFields = [
   'name', 'description', 'shortDescription', 'price', 'salePrice', 'sku',
   'category', 'stockQuantity', 'weight', 'dimensions', 'tags',
-  'specifications', 'images', 'featured', 'isActive', 'inStock'
+  'specifications', 'images', 'featured', 'isActive', 'inStock',
+  'metaTitle', 'metaDescription', 'metaKeywords'
 ];
 
 const escapeCsvValue = (value) => {
@@ -357,11 +348,14 @@ router.get('/export', auth, authorize('inventory_manager', 'super_admin'), async
 });
 
 // @route   GET /api/products/:id
-// @desc    Get single product
+// @desc    Get single product (by _id or slug)
 // @access  Public
 router.get('/:id', async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    let product = await Product.findById(req.params.id);
+    if (!product) {
+      product = await Product.findOne({ slug: req.params.id });
+    }
     if (product) {
       await MongoShim.populate(product, 'category', Category, 'name slug');
     }
@@ -385,7 +379,10 @@ router.get('/:id', async (req, res) => {
 // @access  Public
 router.get('/:id/related', async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    let product = await Product.findById(req.params.id);
+    if (!product) {
+      product = await Product.findOne({ slug: req.params.id });
+    }
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -410,7 +407,8 @@ router.post('/', auth, authorize('inventory_manager', 'super_admin'), upload.arr
   try {
     const {
       name, description, shortDescription, price, salePrice, sku,
-      category, stockQuantity, weight, dimensions, tags, specifications
+      category, stockQuantity, weight, dimensions, tags, specifications,
+      metaTitle, metaDescription, metaKeywords
     } = req.body;
 
     // Check if category exists
@@ -431,7 +429,10 @@ router.post('/', auth, authorize('inventory_manager', 'super_admin'), upload.arr
       weight: weight ? parseFloat(weight) : undefined,
       dimensions: dimensions ? JSON.parse(dimensions) : undefined,
       tags: tags ? tags.split(',').map(tag => tag.trim()) : [],
-      specifications: specifications ? JSON.parse(specifications) : {}
+      specifications: specifications ? JSON.parse(specifications) : {},
+      metaTitle,
+      metaDescription,
+      metaKeywords
     };
 
     // Upload images through waterfall: Supabase → Cloudinary → local
@@ -469,7 +470,8 @@ router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.a
       removeImages, // Array of image URLs to remove
       replaceImages,
       existingImageUrls,
-      externalImageUrl
+      externalImageUrl,
+      metaTitle, metaDescription, metaKeywords
     } = req.body;
 
     const product = await Product.findById(req.params.id);
@@ -491,6 +493,9 @@ router.put('/:id', auth, authorize('inventory_manager', 'super_admin'), upload.a
     if (tags) product.tags = tags.split(',').map(tag => tag.trim());
     if (specifications) product.specifications = JSON.parse(specifications);
     if (isActive !== undefined) product.isActive = isActive;
+    if (metaTitle !== undefined) product.metaTitle = metaTitle;
+    if (metaDescription !== undefined) product.metaDescription = metaDescription;
+    if (metaKeywords !== undefined) product.metaKeywords = metaKeywords;
 
     if (replaceImages === 'true' || replaceImages === true) {
       product.images = [];
@@ -631,21 +636,23 @@ router.post('/bulk-import', auth, authorize('inventory_manager', 'super_admin'),
     const fieldsToUpdate = req.body.fieldsToUpdate ? 
       req.body.fieldsToUpdate.split(',').map(f => f.trim()) : 
       []; // Empty array = update all provided fields
+    const concurrency = Math.min(Math.max(parseInt(req.body.concurrency) || 5, 1), 20);
 
     console.log('📊 Processing CSV import with options:', {
       file: req.file.path,
       updateExisting,
-      fieldsToUpdate: fieldsToUpdate.length ? fieldsToUpdate : 'all'
+      fieldsToUpdate: fieldsToUpdate.length ? fieldsToUpdate : 'all',
+      concurrency
     });
 
     const results = await csvImporter.importProducts(
       req.file.path, 
       updateExisting, 
-      fieldsToUpdate
+      fieldsToUpdate,
+      { concurrency }
     );
 
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
+    await fsp.unlink(req.file.path);
     console.log('🧹 Cleaned up CSV file');
 
     if (results.success) {
@@ -667,9 +674,8 @@ router.post('/bulk-import', auth, authorize('inventory_manager', 'super_admin'),
     }
   } catch (error) {
     console.error('CSV import error:', error);
-    // Clean up file if it exists
     if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
+      await fsp.unlink(req.file.path);
     }
     res.status(500).json({ message: 'Server error', error: error.message });
   }

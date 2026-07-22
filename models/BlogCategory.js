@@ -5,7 +5,9 @@ const BlogCategory = new MongoShim('blogcategories', {
   timestamps: true,
   fields: {
     name: { default: '' },
-    description: { default: '' }
+    description: { default: '' },
+    metaTitle: { default: '' },
+    metaDescription: { default: '' }
   },
   preSave: (doc, isNew) => {
     if (doc.name && !doc.slug) {

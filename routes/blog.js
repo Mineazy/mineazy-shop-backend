@@ -37,7 +37,7 @@ const upload = multer({
   }
 });
 
-router.get('/', async (req, res) => {
+const listPosts = async (req, res) => {
   try {
     const {
       page = 1,
@@ -87,9 +87,12 @@ router.get('/', async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
-});
+};
 
-router.get('/related/:slug', async (req, res) => {
+router.get('/', listPosts);
+router.get('/posts', listPosts);
+
+const getRelatedPosts = async (req, res) => {
   try {
     const post = await BlogPost.findOne({
       slug: req.params.slug,
@@ -118,9 +121,12 @@ router.get('/related/:slug', async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
-});
+};
 
-router.get('/:slug', async (req, res) => {
+router.get('/related/:slug', getRelatedPosts);
+router.get('/posts/related/:slug', getRelatedPosts);
+
+const getSinglePost = async (req, res) => {
   try {
     const post = await BlogPost.findOne({
       slug: req.params.slug,
@@ -143,112 +149,7 @@ router.get('/:slug', async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
-});
-
-router.post('/', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
-  try {
-    const {
-      title,
-      content,
-      excerpt,
-      category,
-      tags,
-      status = 'draft'
-    } = req.body;
-
-    const postData = {
-      title,
-      content,
-      excerpt,
-      author: req.user._id,
-      category: category || null,
-      tags: tags ? tags.split(',').map(tag => tag.trim()) : [],
-      status
-    };
-
-    if (req.file) {
-      postData.featuredImage = `/uploads/blog/${req.file.filename}`;
-    }
-
-    if (status === 'published') {
-      postData.publishedAt = new Date();
-    }
-
-    const post = await BlogPost.insert(postData);
-
-    await MongoShim.populate(post, 'author', User, 'firstName lastName');
-    await MongoShim.populate(post, 'category', BlogCategory, 'name slug');
-
-    res.status(201).json({
-      message: 'Blog post created successfully',
-      post
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-router.put('/:id', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
-  try {
-    const {
-      title,
-      content,
-      excerpt,
-      category,
-      tags,
-      status
-    } = req.body;
-
-    const post = await BlogPost.findById(req.params.id);
-    if (!post) {
-      return res.status(404).json({ message: 'Post not found' });
-    }
-
-    post.title = title || post.title;
-    post.content = content || post.content;
-    post.excerpt = excerpt || post.excerpt;
-    post.category = category !== undefined ? category : post.category;
-    post.tags = tags ? tags.split(',').map(tag => tag.trim()) : post.tags;
-
-    if (status && status !== post.status) {
-      post.status = status;
-      if (status === 'published' && !post.publishedAt) {
-        post.publishedAt = new Date();
-      }
-    }
-
-    if (req.file) {
-      post.featuredImage = `/uploads/blog/${req.file.filename}`;
-    }
-
-    await BlogPost.update({ _id: post._id }, post);
-
-    await MongoShim.populate(post, 'author', User, 'firstName lastName');
-    await MongoShim.populate(post, 'category', BlogCategory, 'name slug');
-
-    res.json({
-      message: 'Blog post updated successfully',
-      post
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-router.delete('/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
-  try {
-    const post = await BlogPost.findById(req.params.id);
-    if (!post) {
-      return res.status(404).json({ message: 'Post not found' });
-    }
-
-    await BlogPost.findByIdAndDelete(req.params.id);
-
-    res.json({ message: 'Blog post deleted successfully' });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
+};
 
 router.get('/categories', async (req, res) => {
   try {
@@ -268,73 +169,6 @@ router.get('/categories', async (req, res) => {
     );
 
     res.json(categoriesWithCount);
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-router.post('/categories', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
-  try {
-    const { name, description } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ message: 'Category name is required' });
-    }
-
-    const category = await BlogCategory.insert({
-      name,
-      description
-    });
-
-    res.status(201).json({
-      message: 'Blog category created successfully',
-      category
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-router.put('/categories/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
-  try {
-    const { name, description } = req.body;
-
-    const category = await BlogCategory.findById(req.params.id);
-    if (!category) {
-      return res.status(404).json({ message: 'Category not found' });
-    }
-
-    category.name = name || category.name;
-    category.description = description || category.description;
-
-    await BlogCategory.update({ _id: category._id }, category);
-
-    res.json({
-      message: 'Blog category updated successfully',
-      category
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-router.delete('/categories/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
-  try {
-    const category = await BlogCategory.findById(req.params.id);
-    if (!category) {
-      return res.status(404).json({ message: 'Category not found' });
-    }
-
-    const postsCount = await BlogPost.countDocuments({ category: req.params.id });
-    if (postsCount > 0) {
-      return res.status(400).json({
-        message: 'Cannot delete category that is used by blog posts'
-      });
-    }
-
-    await BlogCategory.findByIdAndDelete(req.params.id);
-
-    res.json({ message: 'Blog category deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -401,6 +235,197 @@ router.get('/archive', async (req, res) => {
     ]);
 
     res.json(archive);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.get('/posts/:slug', getSinglePost);
+router.get('/:slug', getSinglePost);
+
+router.post('/', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
+  try {
+    const {
+      title,
+      content,
+      excerpt,
+      category,
+      tags,
+      status = 'draft',
+      metaTitle,
+      metaDescription,
+      metaKeywords
+    } = req.body;
+
+    const postData = {
+      title,
+      content,
+      excerpt,
+      author: req.user._id,
+      category: category || null,
+      tags: tags ? tags.split(',').map(tag => tag.trim()) : [],
+      status,
+      metaTitle,
+      metaDescription,
+      metaKeywords
+    };
+
+    if (req.file) {
+      postData.featuredImage = `/uploads/blog/${req.file.filename}`;
+    }
+
+    if (status === 'published') {
+      postData.publishedAt = new Date();
+    }
+
+    const post = await BlogPost.insert(postData);
+
+    await MongoShim.populate(post, 'author', User, 'firstName lastName');
+    await MongoShim.populate(post, 'category', BlogCategory, 'name slug');
+
+    res.status(201).json({
+      message: 'Blog post created successfully',
+      post
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.put('/:id', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
+  try {
+    const {
+      title,
+      content,
+      excerpt,
+      category,
+      tags,
+      status,
+      metaTitle,
+      metaDescription,
+      metaKeywords
+    } = req.body;
+
+    const post = await BlogPost.findById(req.params.id);
+    if (!post) {
+      return res.status(404).json({ message: 'Post not found' });
+    }
+
+    post.title = title || post.title;
+    post.content = content || post.content;
+    post.excerpt = excerpt || post.excerpt;
+    post.category = category !== undefined ? category : post.category;
+    post.tags = tags ? tags.split(',').map(tag => tag.trim()) : post.tags;
+    if (metaTitle !== undefined) post.metaTitle = metaTitle;
+    if (metaDescription !== undefined) post.metaDescription = metaDescription;
+    if (metaKeywords !== undefined) post.metaKeywords = metaKeywords;
+
+    if (status && status !== post.status) {
+      post.status = status;
+      if (status === 'published' && !post.publishedAt) {
+        post.publishedAt = new Date();
+      }
+    }
+
+    if (req.file) {
+      post.featuredImage = `/uploads/blog/${req.file.filename}`;
+    }
+
+    await BlogPost.update({ _id: post._id }, post);
+
+    await MongoShim.populate(post, 'author', User, 'firstName lastName');
+    await MongoShim.populate(post, 'category', BlogCategory, 'name slug');
+
+    res.json({
+      message: 'Blog post updated successfully',
+      post
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.delete('/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
+  try {
+    const post = await BlogPost.findById(req.params.id);
+    if (!post) {
+      return res.status(404).json({ message: 'Post not found' });
+    }
+
+    await BlogPost.findByIdAndDelete(req.params.id);
+
+    res.json({ message: 'Blog post deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.post('/categories', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
+  try {
+    const { name, description, metaTitle, metaDescription } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ message: 'Category name is required' });
+    }
+
+    const category = await BlogCategory.insert({
+      name,
+      description,
+      metaTitle,
+      metaDescription
+    });
+
+    res.status(201).json({
+      message: 'Blog category created successfully',
+      category
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.put('/categories/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
+  try {
+    const { name, description, metaTitle, metaDescription } = req.body;
+
+    const category = await BlogCategory.findById(req.params.id);
+    if (!category) {
+      return res.status(404).json({ message: 'Category not found' });
+    }
+
+    category.name = name || category.name;
+    category.description = description || category.description;
+    if (metaTitle !== undefined) category.metaTitle = metaTitle;
+    if (metaDescription !== undefined) category.metaDescription = metaDescription;
+
+    await BlogCategory.update({ _id: category._id }, category);
+
+    res.json({
+      message: 'Blog category updated successfully',
+      category
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.delete('/categories/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
+  try {
+    const category = await BlogCategory.findById(req.params.id);
+    if (!category) {
+      return res.status(404).json({ message: 'Category not found' });
+    }
+
+    const postsCount = await BlogPost.countDocuments({ category: req.params.id });
+    if (postsCount > 0) {
+      return res.status(400).json({
+        message: 'Cannot delete category that is used by blog posts'
+      });
+    }
+
+    await BlogCategory.findByIdAndDelete(req.params.id);
+
+    res.json({ message: 'Blog category deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }

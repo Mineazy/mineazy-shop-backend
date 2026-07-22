@@ -63,6 +63,7 @@ const emailRoutes = require('./routes/emails');
 const adminRoutes = require('./routes/admin');
 const searchRoutes = require('./routes/search');
 const mediaRoutes = require('./routes/media');
+const seoRoutes = require('./routes/seo');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -165,6 +166,104 @@ app.use('/api/emails', emailRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/media', mediaRoutes);
+
+// SEO routes
+app.use('/api/seo', seoRoutes);
+
+// Search engine crawling endpoints (at root level)
+app.get('/robots.txt', (req, res) => {
+  const robots = `User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api
+Disallow: /checkout
+Disallow: /cart
+
+Sitemap: https://mineazy.co.zw/sitemap.xml
+
+# Host
+Host: https://mineazy.co.zw
+`;
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.send(robots);
+});
+
+app.get('/sitemap.xml', async (req, res) => {
+  try {
+    const baseUrl = 'https://mineazy.co.zw';
+
+    const Product = require('./models/Product');
+    const Category = require('./models/Category');
+    const BlogPost = require('./models/BlogPost');
+    const Page = require('./models/Page');
+
+    const [products, categories, posts, pages] = await Promise.all([
+      Product.find({ isActive: true }).sort({ updatedAt: -1 }),
+      Category.find({ isActive: true }).sort({ name: 1 }),
+      BlogPost.find({ status: 'published' }).sort({ publishedAt: -1 }),
+      Page.find({ isPublished: true }).sort({ updatedAt: -1 })
+    ]);
+
+    const urls = [];
+
+    urls.push({ loc: baseUrl, priority: '1.0', changefreq: 'daily' });
+    urls.push({ loc: `${baseUrl}/shop`, priority: '0.9', changefreq: 'daily' });
+    urls.push({ loc: `${baseUrl}/blog`, priority: '0.8', changefreq: 'weekly' });
+    urls.push({ loc: `${baseUrl}/contact`, priority: '0.7', changefreq: 'monthly' });
+    urls.push({ loc: `${baseUrl}/about`, priority: '0.7', changefreq: 'monthly' });
+    urls.push({ loc: `${baseUrl}/quote`, priority: '0.6', changefreq: 'monthly' });
+
+    for (const product of products) {
+      urls.push({
+        loc: `${baseUrl}/product/${product.slug}`,
+        priority: '0.8',
+        changefreq: 'weekly',
+        lastmod: product.updatedAt || product.createdAt
+      });
+    }
+
+    for (const category of categories) {
+      urls.push({
+        loc: `${baseUrl}/category/${category.slug}`,
+        priority: '0.7',
+        changefreq: 'weekly'
+      });
+    }
+
+    for (const post of posts) {
+      urls.push({
+        loc: `${baseUrl}/blog/${post.slug}`,
+        priority: '0.6',
+        changefreq: 'monthly',
+        lastmod: post.updatedAt || post.publishedAt
+      });
+    }
+
+    for (const page of pages) {
+      urls.push({
+        loc: `${baseUrl}/page/${page.slug}`,
+        priority: '0.5',
+        changefreq: 'monthly',
+        lastmod: page.updatedAt || page.createdAt
+      });
+    }
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls.map(u => `  <url>
+    <loc>${u.loc}</loc>
+    <priority>${u.priority}</priority>
+    <changefreq>${u.changefreq}</changefreq>${u.lastmod ? `\n    <lastmod>${new Date(u.lastmod).toISOString()}</lastmod>` : ''}
+  </url>`).join('\n')}
+</urlset>`;
+
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.send(xml);
+  } catch (error) {
+    console.error('Sitemap generation error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
 
 // Health check
 app.get('/health', (req, res) => {

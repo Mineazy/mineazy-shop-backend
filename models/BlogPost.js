@@ -9,7 +9,10 @@ const BlogPost = new MongoShim('blogposts', {
     excerpt: { default: '' },
     tags: { default: [] },
     status: { default: 'draft' },
-    viewCount: { default: 0 }
+    viewCount: { default: 0 },
+    metaTitle: { default: '' },
+    metaDescription: { default: '' },
+    metaKeywords: { default: '' }
   },
   preSave: (doc, isNew) => {
     if (doc.title && !doc.slug) {

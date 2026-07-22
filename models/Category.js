@@ -7,7 +7,10 @@ const Category = new MongoShim('categories', {
     name: { default: '' },
     description: { default: '' },
     isActive: { default: true },
-    sortOrder: { default: 0 }
+    sortOrder: { default: 0 },
+    metaTitle: { default: '' },
+    metaDescription: { default: '' },
+    metaKeywords: { default: '' }
   },
   preSave: (doc, isNew) => {
     if (doc.name && !doc.slug) {

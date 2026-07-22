@@ -1,0 +1,13 @@
+RewriteEngine On
+
+# Exclude PHP files from Passenger
+RewriteCond %{REQUEST_URI} \.php$ [NC]
+RewriteRule .* - [L,E=no-passenger:1]
+
+# Serve existing files and directories directly
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule .* - [L]
+
+# Proxy all other requests to Node.js backend on port 5000
+RewriteRule ^(.*)$ http://localhost:5000/$1 [P,L]

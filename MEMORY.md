@@ -28,7 +28,7 @@ Node.js/Express e-commerce backend for Mineazy (mining equipment & solutions), d
 ### Environment Variables
 Set in three places (priority order):
 1. `~/shop/.env` — loaded by dotenv, full set of vars
-2. `~/public_html/.htaccess` — `SetEnv` directives for LiteSpeed (subset: FRONTEND_URL, JWT_SECRET, NODE_ENV, EMAIL_*, PAYNOW_*, PORT, UPLOAD_PATH)
+2. `~/public_html/.htaccess` — LiteSpeed rewrite rules (reverse-proxy to Node.js on port 5000)
 3. cPanel Node.js Selector UI — additional vars
 
 **Key vars:**
@@ -49,6 +49,24 @@ Set in three places (priority order):
 | `CLOUDINARY_CLOUD_NAME` | probitymutsambiwa |
 | `PAYNOW_INTEGRATION_ID` | 23628 |
 | `PAYNOW_INTEGRATION_KEY` | cf7f6a2f-833d-4565-b6f3-da62ed6e7dca |
+
+### .htaccess (public_html)
+```
+RewriteEngine On
+
+# Exclude PHP files from Passenger
+RewriteCond %{REQUEST_URI} \.php$ [NC]
+RewriteRule .* - [L,E=no-passenger:1]
+
+# Serve existing files and directories directly (Apache)
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule .* - [L]
+
+# Proxy all other requests to Node.js backend on port 5000
+RewriteRule ^(.*)$ http://localhost:5000/$1 [P,L]
+```
+This reverse-proxies non-static-file requests to Node.js on port 5000. Apache serves existing files from `~/public_html/` (storefront) directly; everything else (API, admin, SPA routes) goes to Node.js.
 
 ---
 
@@ -111,8 +129,10 @@ All data stored in `~/shop/data/` as flat files. Each file is append-only JSONL.
 helmet → cors → compression → rateLimit → body parser → morgan → static (admin_build) → API routes → admin SPA catch-all → frontend static files → error handler
 
 ### Frontend Serving
-- Apache serves `/home9/npivfupq/public_html/` as `DocumentRoot` — Apache handles `/` before Passenger
-- Node.js `SERVE_FRONTEND` serves fallback static files from `~/shop/frontend_build/` but Apache wins for `/`
+- Apache serves `/home9/npivfupq/public_html/` as `DocumentRoot` — existing static files served directly
+- Node.js `SERVE_FRONTEND` serves SPA fallback from `~/frontend/build/` for non-file routes proxied via `.htaccess`
+- Node.js `SERVE_ADMIN` serves admin SPA from `~/shop/admin_build/` at `/admin`
+- All non-file, non-PHP requests are reverse-proxied by `.htaccess` to `localhost:5000`
 - API calls from browser use Axios with `baseURL: "/api"` (same origin)
 
 ---
@@ -136,10 +156,10 @@ helmet → cors → compression → rateLimit → body parser → morgan → sta
 - **Fix:** Updated `mongoshim.js` populate to traverse `.`-separated paths into arrays; inlined `effectivePrice` calculation in cart route
 - **Files:** `utils/mongoshim.js`, `routes/cart.js`
 
-### 4. Admin Panel 404
-- **Problem:** Admin SPA returned 404 because `SERVE_ADMIN` register was after `SERVE_FRONTEND` catch-all
-- **Fix:** Moved admin static serving before the frontend `app.get('*', ...)` catch-all
-- **File:** `server.js`
+### 4. Admin Panel 404 (2026-06-01)
+- **Problem:** Admin SPA at `/admin` returned 404 because `SERVE_ADMIN=true` was missing from `~/shop/.env` on the server
+- **Fix:** Added `SERVE_ADMIN=true` and `SERVE_FRONTEND=true` to `~/shop/.env`; when Passenger manages the app, server.js registers `/admin` and `app.get('*')` routes for admin and frontend SPA fallback
+- **Note:** The code fix from earlier (admin before frontend catch-all in server.js:190-209) was already correct, it just wasn't activated due to missing env var
 
 ### 5. API URL Patching
 - **Problem:** Frontend/admin JS bundles hardcoded Render URL (`https://mining-equipment-backend.onrender.com`)
@@ -158,6 +178,27 @@ helmet → cors → compression → rateLimit → body parser → morgan → sta
 ### 8. SMTP Configuration
 - **Current:** mail.mineazy.co.zw:465, sales@mineazy.co.zw
 - **Note:** Port 465 requires `secure: true` — handled dynamically in `emailService.js`
+
+### 9. Passenger/lsnode Process Killed — Won't Auto-Restart
+- **Problem:** Killing the old lsnode process (to pick up new .env vars) caused it to never restart; Passenger didn't auto-spawn a replacement
+- **Workaround:** Node.js started manually on port 5000 with `.htaccess` reverse-proxy rules (see `.htaccess` section above)
+- **Permanent fix:** Go to cPanel → Setup Node.js Application → find `/home9/npivfupq/shop/` → Start/Edit-Save to re-register with Passenger. Once Passenger manages it again, revert `.htaccess` to the original PHP-only rule.
+- **Manual process check:** `ps aux | grep 'node.*server' | grep -v grep`
+- **Manual start (if needed):**
+  ```bash
+  cd ~/shop && nohup ~/nodevenv/shop/20/bin/node server.js >> ~/shop/server.log 2>> ~/shop/stderr.log &
+  ```
+
+### 10. .htaccess Reverse-Proxy Workaround
+- **Problem:** When Passenger isn't managing the app, requests don't reach Node.js
+- **Fix:** Added rewrite rules in `~/public_html/.htaccess` to proxy non-static-file requests to `localhost:5000`
+- **Rules:** Existing files/directories served by Apache; everything else proxied via `[P]` flag to Node.js
+- **Revert when Passenger is fixed:** Restore the original `.htaccess`:
+  ```
+  RewriteEngine On
+  RewriteCond %{REQUEST_URI} \.php$ [NC]
+  RewriteRule .* - [L,E=no-passenger:1]
+  ```
 
 ---
 
@@ -196,18 +237,24 @@ scp -o StrictHostKeyChecking=no -P 37980 <local_file> npivfupq@mineazy.co.zw:~/s
 ssh -o StrictHostKeyChecking=no -p 37980 npivfupq@mineazy.co.zw "touch ~/shop/tmp/restart.txt"
 ```
 
-### View Logs
+### Deploy .htaccess
 ```bash
-ssh -o StrictHostKeyChecking=no -p 37980 npivfupq@mineazy.co.zw "tail -50 ~/shop/stderr.log"
+scp -o StrictHostKeyChecking=no -P 37980 .htaccess npivfupq@mineazy.co.zw:~/public_html/.htaccess
 ```
 
-### Check Process
+### Restart App (when Passenger manages it)
 ```bash
-ssh -o StrictHostKeyChecking=no -p 37980 npivfupq@mineazy.co.zw "ps aux | grep node"
+ssh -o StrictHostKeyChecking=no -p 37980 npivfupq@mineazy.co.zw "touch ~/shop/tmp/restart.txt"
 ```
 
-### Update Env Vars
-Edit `~/shop/.env` and/or `~/public_html/.htaccess`, then restart Passenger.
+### Manual Start/Recovery (if Passenger is down)
+```bash
+# Start Node.js manually
+ssh -o StrictHostKeyChecking=no -p 37980 npivfupq@mineazy.co.zw "cd ~/shop && nohup ~/nodevenv/shop/20/bin/node server.js >> ~/shop/server.log 2>> ~/shop/stderr.log &"
+```
+Then deploy the proxy `.htaccess` (see above) to route traffic to the manual process.
 
-### Import Data from Old Backend
-Use the import script or curl the old Render API and write to NeDB files directly.
+### Restore Passenger (permanent fix)
+1. cPanel → Setup Node.js Application → find `/home9/npivfupq/shop/`
+2. Click Start Application (or Edit → Save)
+3. Revert `.htaccess` to original (PHP-only rule)

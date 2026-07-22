@@ -1,5 +1,13 @@
 ﻿const isAbsoluteUrl = (value) => /^https?:\/\//i.test(value || '');
 
+const isValidImageUrl = (value) => {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value.trim());
+    return ['http:', 'https:'].includes(url.protocol);
+  } catch { return false; }
+};
+
 const isLegacyLocalUploadPath = (value) =>
   typeof value === 'string' && /^\/?uploads\//i.test(value.trim());
 
@@ -61,6 +69,7 @@ const sanitizeProductRecord = (product) => {
 
 module.exports = {
   isAbsoluteUrl,
+  isValidImageUrl,
   isLegacyLocalUploadPath,
   sanitizeProductImage,
   sanitizeProductImages,

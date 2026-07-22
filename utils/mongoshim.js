@@ -363,21 +363,50 @@ class MongoShim {
     const single = !Array.isArray(docs);
     const arr = single ? [docs] : docs;
     if (!arr.length) return docs;
-    const refIds = [...new Set(arr.map(d => {
-      const val = d[field];
-      if (Array.isArray(val)) return val;
-      return val;
-    }).flat().filter(Boolean))];
-    if (!refIds.length) return docs;
-    const refDocs = await refModel.find({ _id: { $in: refIds } });
-    const refMap = {};
-    for (const r of refDocs) refMap[r._id] = r;
-    for (const d of arr) {
-      const val = d[field];
-      if (Array.isArray(val)) {
-        d[field] = val.map(id => refMap[id] || id).filter(Boolean);
-      } else if (val) {
-        d[field] = refMap[val] || val;
+
+    const fieldParts = field.split('.');
+    const isNested = fieldParts.length > 1;
+
+    if (isNested) {
+      const [parentField, childField] = fieldParts;
+      const refIds = [...new Set(arr.flatMap(d => {
+        const items = d[parentField];
+        if (!Array.isArray(items)) return [];
+        return items.map(item => item[childField]).filter(Boolean);
+      }))];
+      if (!refIds.length) return docs;
+
+      const refDocs = await refModel.find({ _id: { $in: refIds } });
+      const refMap = {};
+      for (const r of refDocs) refMap[r._id] = r;
+      for (const d of arr) {
+        const items = d[parentField];
+        if (!Array.isArray(items)) continue;
+        for (const item of items) {
+          const id = item[childField];
+          if (id && refMap[id]) {
+            item[childField] = refMap[id];
+          }
+        }
+      }
+    } else {
+      const refIds = [...new Set(arr.map(d => {
+        const val = d[field];
+        if (Array.isArray(val)) return val;
+        return val;
+      }).flat().filter(Boolean))];
+      if (!refIds.length) return docs;
+
+      const refDocs = await refModel.find({ _id: { $in: refIds } });
+      const refMap = {};
+      for (const r of refDocs) refMap[r._id] = r;
+      for (const d of arr) {
+        const val = d[field];
+        if (Array.isArray(val)) {
+          d[field] = val.map(id => refMap[id] || id).filter(Boolean);
+        } else if (val) {
+          d[field] = refMap[val] || val;
+        }
       }
     }
     return single ? arr[0] : arr;

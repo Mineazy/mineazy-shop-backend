@@ -6,7 +6,10 @@ const Page = new MongoShim('pages', {
   fields: {
     title: { default: '' },
     content: { default: '' },
-    isPublished: { default: true }
+    isPublished: { default: true },
+    metaTitle: { default: '' },
+    metaDescription: { default: '' },
+    metaKeywords: { default: '' }
   },
   preSave: (doc, isNew) => {
     if (doc.title && !doc.slug) {

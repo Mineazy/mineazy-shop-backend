@@ -64,6 +64,7 @@ const adminRoutes = require('./routes/admin');
 const searchRoutes = require('./routes/search');
 const mediaRoutes = require('./routes/media');
 const seoRoutes = require('./routes/seo');
+const catalogRoutes = require('./routes/catalog');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -166,6 +167,7 @@ app.use('/api/emails', emailRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/media', mediaRoutes);
+app.use('/api/catalog', catalogRoutes);
 
 // SEO routes
 app.use('/api/seo', seoRoutes);

@@ -22,7 +22,8 @@ Node.js/Express e-commerce backend for Mineazy (mining equipment & solutions), d
 - **Payments:** Paynow
 
 ### Deployment
-- **Git origin:** `https://github.com/anomalyco/mineazy-shop-backend.git`
+- **Git origin (backend):** `https://github.com/Mineazy/mineazy-shop-backend.git`
+- **Git origin (frontend):** `https://github.com/Mineazy/mineazy-shop.git`
 - **Server user:** npivfupq (host: mineazy.co.zw, port: 37980)
 - **App root:** `/home9/npivfupq/shop/`
 - **Frontend root:** `/home9/npivfupq/public_html/` (served by Apache, NOT Node.js)
@@ -329,6 +330,8 @@ helmet → cors → compression → hero preload (Link header for LCP) → rateL
 - **Nav link:** "Branches" in Header.jsx navigation, smooth-scrolls to `#branch-locator` on home page, navigates to `/#branch-locator` from other pages
 - **Stats update:** Hero section branch count updated from "8" to "13"
 - **Note:** `Navigation.jsx` component exists but is NOT used — Header.jsx has its own inline navigation array
+- **Footer:** "Branches" link added to Quick Links in `Footer.jsx`, links to `/#branch-locator`
+- **Hash scroll fix:** Home.jsx `useEffect` listens for `hashchange` event to scroll to `#branch-locator` when clicking from footer/header while already on home page
 
 ---
 

@@ -84,7 +84,7 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-      scriptSrc: ["'self'", 'https://www.googletagmanager.com', 'https://www.google-analytics.com', "'sha256-9Ytvk4EiHz/SB//8YTzBwngaCaS8Q6oYza8R4S+TPuE='"],
+      scriptSrc: ["'self'", 'https://www.googletagmanager.com', 'https://www.google-analytics.com', "'sha256-M41Yfi19sj70jNDR57/IKTnaEgBomF94Dd/duZ+pe/g='", "'sha256-9Ytvk4EiHz/SB//8YTzBwngaCaS8Q6oYza8R4S+TPuE='"],
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: ["'self'", 'https://www.googletagmanager.com', 'https://www.google-analytics.com', 'https://googleads.g.doubleclick.net', ...(process.env.CSP_CONNECT_SRC ? process.env.CSP_CONNECT_SRC.split(',').map(src => src.trim()) : [])],
     },

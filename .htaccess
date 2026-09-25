@@ -1,13 +1,27 @@
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN
+PassengerAppRoot "/home9/npivfupq/shop"
+PassengerBaseURI "/"
+PassengerNodejs "/home9/npivfupq/nodevenv/shop/20/bin/node"
+PassengerAppType node
+PassengerStartupFile server.js
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END
 RewriteEngine On
+
+# Redirect WWW to non-WWW
+RewriteCond %{HTTP_HOST} ^www\.mineazy\.co\.zw$ [NC]
+RewriteRule ^(.*)$ https://mineazy.co.zw/$1 [R=301,L]
+
+# Redirect /index.html to /
+RewriteRule ^index\.html$ / [R=301,L]
+
+# Redirect /index.php to /
+RewriteRule ^index\.php$ / [R=301,L]
+
+# Serve existing static files directly (bypass Passenger/Node.js)
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule .* - [L,E=no-passenger:1]
 
 # Exclude PHP files from Passenger
 RewriteCond %{REQUEST_URI} \.php$ [NC]
 RewriteRule .* - [L,E=no-passenger:1]
-
-# Serve existing files and directories directly
-RewriteCond %{REQUEST_FILENAME} -f [OR]
-RewriteCond %{REQUEST_FILENAME} -d
-RewriteRule .* - [L]
-
-# Proxy all other requests to Node.js backend on port 5000
-RewriteRule ^(.*)$ http://localhost:5000/$1 [P,L]

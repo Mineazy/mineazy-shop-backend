@@ -129,7 +129,7 @@ Register a new user account.
 ```json
 {
   "email": "user@example.com",
-  "password": "Password123!",
+  "password": "your-secure-password",
   "firstName": "John",
   "lastName": "Doe",
   "phone": "+263-xxx-xxxx",
@@ -162,7 +162,7 @@ Authenticate user and get JWT token.
 ```json
 {
   "email": "user@example.com",
-  "password": "Password123!"
+  "password": "your-secure-password"
 }
 ```
 
@@ -215,7 +215,7 @@ Reset password with token.
 ```json
 {
   "token": "reset-token",
-  "password": "NewPassword123!"
+  "password": "Newyour-secure-password"
 }
 ```
 
@@ -250,8 +250,8 @@ Change user password.
 **Request Body:**
 ```json
 {
-  "currentPassword": "OldPassword123!",
-  "newPassword": "NewPassword123!"
+  "currentPassword": "your-current-password",
+  "newPassword": "your-new-password"
 }
 ```
 
@@ -294,7 +294,7 @@ Delete user account.
 **Request Body:**
 ```json
 {
-  "password": "Password123!"
+  "password": "your-secure-password"
 }
 ```
 
@@ -1495,7 +1495,7 @@ curl -X POST https://mining-equipment-backend.onrender.com/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "email": "test@example.com",
-    "password": "Password123!",
+    "password": "your-secure-password",
     "firstName": "Test",
     "lastName": "User"
   }'
@@ -1507,7 +1507,7 @@ curl -X POST https://mining-equipment-backend.onrender.com/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "test@example.com",
-    "password": "Password123!"
+    "password": "your-secure-password"
   }'
 ```
 
@@ -1691,23 +1691,23 @@ https://mining-equipment-backend.onrender.com/api/docs/postman.json
 Use these test accounts for development:
 
 **Admin:**
-- Email: `webmaster@dicomm.co.zw`
-- Password: `Admin123!`
+- Email: `admin@mineazy.co.zw`
+- Password: (set via database)
 - Role: `super_admin`
 
 **Customer:**
-- Email: `john.customer@example.com`
-- Password: `Customer123!`
+- Email: `customer@mineazy.co.zw`
+- Password: (set via database)
 - Role: `customer`
 
 **Business:**
-- Email: `jane.business@example.com`
-- Password: `Business123!`
+- Email: `business@mineazy.co.zw`
+- Password: (set via database)
 - Role: `business`
 
 **Sales Rep:**
-- Email: `sales@miningequipment.com`
-- Password: `Sales123!`
+- Email: `sales@mineazy.co.zw`
+- Password: (set via database)
 - Role: `sales_rep`
 
 ## Error Codes Reference

@@ -311,27 +311,76 @@ helmet → cors → compression → hero preload (Link header for LCP) → rateL
   - `frontend/src/components/Home/BranchLocator.jsx` — Leaflet map component with branch markers, fly-to on click, scrollable sidebar list
   - `frontend/src/pages/Home.jsx` — imports and renders BranchLocator between TrustedPartners and About sections
   - `frontend/src/components/Header/Header.jsx` — "Branches" nav link added to navigation array with smooth-scroll on home page
-- **Branch GPS coordinates (13 branches):**
-  | Branch | Latitude | Longitude |
-  |---|---|---|
-  | Belmont | -20.17246 | 28.57521 |
-  | Tongogara | -20.150342 | 28.589757 |
-  | Junkshop | -20.148579 | 28.58701 |
-  | Maphisa | -21.064779 | 28.458567 |
-  | Esigodini 2 | -20.293167 | 28.938451 |
-  | Habane | -20.3123 | 28.942574 |
-  | Mthwakazi | -20.545458 | 29.276163 |
-  | Mswela | -20.533696 | 29.288926 |
-  | Filabusi Mainshop | -20.526441 | 29.298054 |
-  | Gwanda VID | -20.937838 | 29.009163 |
-  | Thobelani | -20.943136 | 29.00573 |
-  | Gweru MMS | -19.446757 | 29.814204 |
-  | Gweru EazyTools | -19.448399 | 29.810319 |
+- **Branch GPS coordinates with phone numbers (13 branches):**
+  | Branch | Latitude | Longitude | Phone Numbers |
+  |---|---|---|---|
+  | Belmont | -20.17246 | 28.57521 | +263 292 262568, +263 712 290 046 |
+  | Tongogara | -20.150342 | 28.589757 | +263 714 699 928, +263 712 290 046 |
+  | Junkshop | -20.148579 | 28.58701 | +263 714 699 928, +263 715 035 680, +263 712 290 046 |
+  | Maphisa | -21.064779 | 28.458567 | +263 715 348 701, +263 712 290 046 |
+  | Esigodini 2 | -20.293167 | 28.938451 | +263 718 450 335, +263 712 290 046 |
+  | Habane | -20.3123 | 28.942574 | +263 714 786 731, +263 712 290 046 |
+  | Mthwakazi | -20.545458 | 29.276163 | +263 714 761 636, +263 712 290 046 |
+  | Mswela | -20.533696 | 29.288926 | +263 777 487 698, +263 712 290 046 |
+  | Filabusi Mainshop | -20.526441 | 29.298054 | +263 714 761 636, +263 773 686 453, +263 777 487 698, +263 712 290 046 |
+  | Gwanda VID | -20.937838 | 29.009163 | +263 712 290 774, +263 712 290 046 |
+  | Thobelani | -20.943136 | 29.00573 | +263 717 852 371, +263 712 290 046 |
+  | Gweru MMS | -19.446757 | 29.814204 | +263 71 583 0237, +263 712 290 046 |
+  | Gweru EazyTools | -19.448399 | 29.810319 | +263 717 12 181, +263 54222 2261, +263 712 290 046 |
 - **Nav link:** "Branches" in Header.jsx navigation, smooth-scrolls to `#branch-locator` on home page, navigates to `/#branch-locator` from other pages
 - **Stats update:** Hero section branch count updated from "8" to "13"
 - **Note:** `Navigation.jsx` component exists but is NOT used — Header.jsx has its own inline navigation array
 - **Footer:** "Branches" link added to Quick Links in `Footer.jsx`, links to `/#branch-locator`
 - **Hash scroll fix:** Home.jsx `useEffect` listens for `hashchange` event to scroll to `#branch-locator` when clicking from footer/header while already on home page
+
+### 24. WhatsApp Chatbot "Ezzie" (ADDED 2026-09-10, UPDATED 2026-09-10)
+- **Feature:** AI-powered chatbot for customer support via WhatsApp and web chat widget
+- **Bot Name:** Ezzie
+- **Twilio Number:** +17372508034
+- **Web Chat Widget:** Floating green button on mineazy.co.zw (bottom-right corner)
+- **Product Knowledge:** Pre-loads all 2,557 products and 23 categories from NeDB (cache refreshes every 5 min)
+- **Intents (25+):**
+  - Greeting, Farewell, Help, About
+  - Order Tracking, Product Search, Product Detail, Product Category
+  - Product Price, Product Availability, Product Recommend
+  - Categories, Branches, Branch Specific
+  - Services, Contact, Pricing, Delivery, Payment, Returns
+  - Compare, Bulk Order, Quote
+- **Dependencies added:** `twilio`
+- **Files:**
+  - `utils/twilioService.js` — Twilio API client for sending WhatsApp messages
+  - `utils/chatbot.js` — Chatbot logic with 25+ intents, fuzzy search, product knowledge base, session management
+  - `routes/whatsapp.js` — Webhook endpoints (`GET/POST /api/whatsapp/webhook`, `/send`, `/status`, `/chat`)
+  - `server.js` — Mounted `/api/whatsapp` route
+  - `frontend/src/components/Common/WhatsAppFloat.jsx` — Web chat widget with message history, typing indicator, quick replies
+- **Webhook URL:** `https://mineazy.co.zw/api/whatsapp/webhook`
+- **Environment Variables:**
+  | Variable | Value |
+  |---|---|
+  | `TWILIO_ACCOUNT_SID` | (set in .env) |
+  | `TWILIO_AUTH_TOKEN` | (set in .env) |
+  | `TWILIO_WHATSAPP_NUMBER` | whatsapp:+17372508034 |
+  | `TWILIO_VERIFY_TOKEN` | (set in .env) |
+- **API Endpoints:**
+  - `GET /api/whatsapp/webhook` — Twilio webhook verification
+  - `POST /api/whatsapp/webhook` — Receive incoming WhatsApp messages
+  - `POST /api/whatsapp/chat` — Web chat endpoint (accepts `{ message, sessionId }`, returns `{ success, response }`)
+  - `POST /api/whatsapp/send` — Send WhatsApp message (admin: `{ to, message }`)
+  - `GET /api/whatsapp/status` — Check WhatsApp service configuration
+- **Smart Search Features:**
+  - Fuzzy matching on product names, SKUs, descriptions, tags
+  - Category-aware search (e.g., "drilling" shows drilling category products)
+  - Direct product lookup by name or SKU
+  - Related products for partial matches
+- **Response Formatting:**
+  - Section dividers (`━━━━━━`) for readability
+  - Emoji indicators for quick scanning
+  - SKU references in backticks
+  - Stock status indicators (✅/❌)
+  - Discount percentages and savings
+  - Regional grouping for branches
+- **Testing:** Join Twilio WhatsApp Sandbox, send "hi" to +17372508034
+- **Web Chat Test:** Go to mineazy.co.zw, click green chat button, type "hi"
 
 ---
 

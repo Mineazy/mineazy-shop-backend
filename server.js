@@ -65,6 +65,7 @@ const searchRoutes = require('./routes/search');
 const mediaRoutes = require('./routes/media');
 const seoRoutes = require('./routes/seo');
 const catalogRoutes = require('./routes/catalog');
+const whatsappRoutes = require('./routes/whatsapp');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -83,9 +84,9 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-      scriptSrc: ["'self'"],
+      scriptSrc: ["'self'", 'https://www.googletagmanager.com', 'https://www.google-analytics.com', "'sha256-9Ytvk4EiHz/SB//8YTzBwngaCaS8Q6oYza8R4S+TPuE='"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", ...(process.env.CSP_CONNECT_SRC ? process.env.CSP_CONNECT_SRC.split(',').map(src => src.trim()) : [])],
+      connectSrc: ["'self'", 'https://www.googletagmanager.com', 'https://www.google-analytics.com', 'https://googleads.g.doubleclick.net', ...(process.env.CSP_CONNECT_SRC ? process.env.CSP_CONNECT_SRC.split(',').map(src => src.trim()) : [])],
     },
   },
   crossOriginEmbedderPolicy: false,
@@ -116,6 +117,24 @@ app.use(cors({
 
 app.use(compression());
 
+// Preload hero image for better LCP
+app.use((req, res, next) => {
+  if (req.path === '/' || req.path === '/index.html') {
+    try {
+      const mediaDir = path.join(__dirname, '..', 'frontend', 'build', 'static', 'media');
+      const altMediaDir = path.join(__dirname, 'frontend_build', 'static', 'media');
+      const dir = fs.existsSync(mediaDir) ? mediaDir : (fs.existsSync(altMediaDir) ? altMediaDir : null);
+      if (dir) {
+        const heroFile = fs.readdirSync(dir).find(f => f.startsWith('home-banner') && f.endsWith('.webp'));
+        if (heroFile) {
+          res.setHeader('Link', `</static/media/${heroFile}>; rel=preload; as=image; fetchpriority=high`);
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+  next();
+});
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -130,7 +149,7 @@ app.use('/api', limiter);
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: NODE_ENV === 'production' ? 5 : 50,
+  max: NODE_ENV === 'production' ? 20 : 50,
   message: {
     error: 'Too many authentication attempts, please try again later.'
   },
@@ -171,6 +190,9 @@ app.use('/api/catalog', catalogRoutes);
 
 // SEO routes
 app.use('/api/seo', seoRoutes);
+
+// WhatsApp chatbot
+app.use('/api/whatsapp', whatsappRoutes);
 
 // Search engine crawling endpoints (at root level)
 app.get('/robots.txt', (req, res) => {
@@ -301,8 +323,17 @@ if (process.env.SERVE_ADMIN === 'true') {
     app.use('/admin', express.static(adminBuildPath));
     // Admin Vite build uses root-relative /assets/... paths; serve them at root level
     app.use('/assets', express.static(path.join(adminBuildPath, 'assets')));
+
+    // Valid admin routes that should return 200
+    const validAdminRoutes = [
+      '/admin', '/admin/login', '/admin/dashboard', '/admin/products',
+      '/admin/orders', '/admin/customers', '/admin/settings', '/admin/blog'
+    ];
+
+    // Admin SPA catch-all: return 404 for non-existent admin routes
     app.get('/admin*', (req, res) => {
-      res.sendFile(path.join(adminBuildPath, 'index.html'));
+      const isValidRoute = validAdminRoutes.some(route => req.path === route || req.path.startsWith(route + '/'));
+      res.status(isValidRoute ? 200 : 404).sendFile(path.join(adminBuildPath, 'index.html'));
     });
   } else {
     console.warn('SERVE_ADMIN enabled but admin build not found in any expected location:', candidateAdminPaths.join(', '));
@@ -321,8 +352,20 @@ if (process.env.SERVE_FRONTEND === 'true') {
     console.log('Serving frontend from', frontendBuildPath);
     app.use(express.static(frontendBuildPath));
 
+    // Valid SPA routes that should return 200
+    const validSpaRoutes = [
+      '/', '/shop', '/login', '/register', '/forgot-password', '/reset-password',
+      '/verify-email', '/about', '/blog', '/contact', '/cart', '/checkout',
+      '/account', '/orders', '/search', '/privacy', '/terms', '/help',
+      '/settings', '/dashboard/products', '/video-generator', '/quote',
+      '/product', '/categories', '/compare', '/wishlist', '/notifications'
+    ];
+
+    // SPA catch-all: return 404 for non-existent routes, 200 for valid ones
     app.get('*', (req, res) => {
-      res.sendFile(path.join(frontendBuildPath, 'index.html'));
+      const reqPath = req.path;
+      const isValidRoute = validSpaRoutes.some(route => reqPath === route || reqPath.startsWith(route + '/'));
+      res.status(isValidRoute ? 200 : 404).sendFile(path.join(frontendBuildPath, 'index.html'));
     });
   } else {
     console.warn('SERVE_FRONTEND enabled but frontend build not found in any expected location:', candidatePaths.join(', '));

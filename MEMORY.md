@@ -173,7 +173,7 @@ helmet → cors → compression → hero preload (Link header for LCP) → rateL
 - **Text-to-code ratio:** Expanded noscript content, added SEO text section at bottom of Home.jsx (300+ words), expanded hero/about/testimonials/featured products/CTA sections. Currently 8% (up from 4%).
 - **Product 404s:** Added `/product`, `/categories`, `/compare`, `/wishlist`, `/notifications`, `/quote` to `validSpaRoutes` in server.js.
 - **`/index.html` 404:** Added `RewriteRule ^index\.html$ / [R=301,L]` and `^index\.php$ / [R=301,L]` in `.htaccess`.
-- **Google tag:** Added `AW-18409302529` async tag in `index.html`, CSP updated to allow `googletagmanager.com`.
+- **Google tag:** Added `AW-18409302529` async tag in `index.html`, CSP updated to allow `googletagmanager.com` (see #14 and #25 for 2026-09-25 dual-hash + connectSrc hotfix).
 
 ### Image Optimization (2026-08-26)
 - **Hero image:** `home-banner.webp` compressed from 373KB → **48KB** (87% reduction) using sharp at quality 55, width 1200px.
@@ -262,9 +262,9 @@ helmet → cors → compression → hero preload (Link header for LCP) → rateL
   2. `~/shop/frontend_build/` — fallback for Node.js
   3. `~/public_html/` — for Apache direct serving (index.html + static/)
 
-### 14. Google Tag Not Present (FIXED 2026-08-25)
+### 14. Google Tag Not Present (FIXED 2026-08-25, HOTFIX 2026-09-25)
 - **Problem:** Google Ads conversion tracking tag (AW-18409302529) was not present on the site.
-- **Fix:** Added async Google tag to `index.html` after `<head>` tag. Updated CSP in server.js `scriptSrc` to include `https://www.googletagmanager.com`.
+- **Fix:** Added async Google tag to `index.html` after `<head>` tag. Updated CSP in server.js `scriptSrc` to include `https://www.googletagmanager.com`. Hotfix 2026-09-25: added both hashes (minified `M41Y...` + source `9Ytvk...`), added `google-analytics.com` to `scriptSrc` and `googletagmanager`/`google-analytics`/`doubleclick` to `connectSrc` (see #25).
 
 ### 15. SEO: Duplicate Meta Tags & Missing Canonical (FIXED 2026-08-25)
 - **Problem:** `index.html` had duplicate meta description, OG tags, Twitter tags, and canonical link that conflicted with `Seo.jsx` (react-helmet-async).
@@ -381,6 +381,13 @@ helmet → cors → compression → hero preload (Link header for LCP) → rateL
   - Regional grouping for branches
 - **Testing:** Join Twilio WhatsApp Sandbox, send "hi" to +17372508034
 - **Web Chat Test:** Go to mineazy.co.zw, click green chat button, type "hi"
+
+### 25. Google Tag CSP Hotfix & Live Verification (2026-09-25)
+- **Tag:** `AW-18409302529` — verified live `https://mineazy.co.zw/` has exactly **1** instance immediately after `<head>` (CRA `frontend/public/index.html:3` covers all SPA routes; no duplicate per requirement). Live HTML is minified: `<script>function gtag(){dataLayer.push(arguments)}window.dataLayer=window.dataLayer||[],gtag("js",new Date),gtag("config","AW-18409302529")</script>`
+- **Problem found:** Initial CSP had only one hash — source hash `sha256-9Ytvk4EiHz/SB//8YTzBwngaCaS8Q6oYza8R4S+TPuE=` (whitespace-indented source) did not match minified live build hash `sha256-M41Yfi19sj70jNDR57/IKTnaEgBomF94Dd/duZ+pe/g=`; browsers blocked inline `gtag` config. `connectSrc` was `'self'` only, blocking `googletagmanager`/`google-analytics`/`doubleclick` beacons.
+- **Fix:** `server.js:87` `scriptSrc` now `['self', 'https://www.googletagmanager.com', 'https://www.google-analytics.com', 'sha256-M41Yfi19...', 'sha256-9Ytvk4...']` (both hashes); `server.js:89` `connectSrc` adds `https://www.googletagmanager.com`, `https://www.google-analytics.com`, `https://googleads.g.doubleclick.net`. Verified via `curl -i https://mineazy.co.zw/health` CSP header and `curl -s https://mineazy.co.zw/ | grep -c AW-18409302529` → 1.
+- **Deploy:** `scp server.js routes/whatsapp.js utils/chatbot.js utils/twilioService.js .htaccess → ~/shop/` + `touch ~/shop/tmp/restart.txt` (9f39792 → e7d579b, pushed to `origin/master`). `GET /api/whatsapp/status` → `configured:true`. Note: do NOT add tag to `admin/index.html` (auth-gated) — website = public SPA only.
+- **GitHub push protection:** Redacted `TWILIO_ACCOUNT_SID` value from `MEMORY.md:360` to placeholder `(set in .env)` to satisfy secret scanning.
 
 ---
 

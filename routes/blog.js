@@ -2,12 +2,19 @@
 const BlogPost = require('../models/BlogPost');
 const BlogCategory = require('../models/BlogCategory');
 const User = require('../models/User');
+const BlogComment = require('../models/BlogComment');
+const BlogReaction = require('../models/BlogReaction');
+const commentRoutes = require('./blogComments');
 const MongoShim = require('../utils/mongoshim');
 const { auth, authorize } = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
 
 const router = express.Router();
+
+// Comments, likes/dislikes and moderation. Registered first so /comments is
+// not swallowed by the catch-all GET /:slug below.
+router.use(commentRoutes);
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -353,6 +360,8 @@ router.delete(['/:id', '/posts/:id'], auth, authorize('content_manager', 'super_
     }
 
     await BlogPost.findByIdAndDelete(req.params.id);
+    await BlogComment.remove({ post: post._id });
+    await BlogReaction.remove({ post: post._id });
 
     res.json({ message: 'Blog post deleted successfully' });
   } catch (error) {

@@ -37,8 +37,13 @@ class PaynowClient {
    * Verify hash from Paynow response
    */
   verifyHash(values, receivedHash) {
-    const generatedHash = this.generateHash(values);
-    return generatedHash === receivedHash;
+    if (typeof receivedHash !== 'string' || !receivedHash) {
+      return false;
+    }
+    const expected = Buffer.from(this.generateHash(values));
+    const received = Buffer.from(receivedHash.toUpperCase());
+    // Constant-time comparison so the hash can't be guessed byte by byte
+    return expected.length === received.length && crypto.timingSafeEqual(expected, received);
   }
 
   /**

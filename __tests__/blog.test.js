@@ -12,6 +12,8 @@ jest.mock('../models/BlogPost', () => ({
 }));
 jest.mock('../models/BlogCategory', () => ({}));
 jest.mock('../models/User', () => ({}));
+jest.mock('../models/BlogComment', () => ({ remove: jest.fn().mockResolvedValue(0) }));
+jest.mock('../models/BlogReaction', () => ({ remove: jest.fn().mockResolvedValue(0) }));
 jest.mock('../utils/mongoshim', () => ({ populate: jest.fn() }));
 
 // Tests choose the signed-in user's role with an x-test-role header
@@ -22,6 +24,7 @@ jest.mock('../middleware/auth', () => ({
     req.user = { _id: 'u'.repeat(24), role };
     next();
   },
+  optionalAuth: (req, res, next) => next(),
   authorize: (...roles) => (req, res, next) =>
     roles.includes(req.user.role) ? next() : res.status(403).json({ message: 'Forbidden' })
 }));

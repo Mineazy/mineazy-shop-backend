@@ -48,13 +48,13 @@ Set in three places (priority order):
 | `EMAIL_HOST` | mail.mineazy.co.zw |
 | `EMAIL_PORT` | 465 |
 | `EMAIL_USER` | sales@mineazy.co.zw |
-| `EMAIL_PASS` | Manchester20# |
+| `EMAIL_PASS` | (set in .env) |
 | `EMAIL_FROM` | sales@mineazy.co.zw |
-| `CLOUDINARY_API_KEY` | 681449246525152 |
-| `CLOUDINARY_API_SECRET` | Qxxcy49auO-4XnMoOswB9M6lD2A |
+| `CLOUDINARY_API_KEY` | (set in .env) |
+| `CLOUDINARY_API_SECRET` | (set in .env) |
 | `CLOUDINARY_CLOUD_NAME` | probitymutsambiwa |
 | `PAYNOW_INTEGRATION_ID` | 23628 |
-| `PAYNOW_INTEGRATION_KEY` | cf7f6a2f-833d-4565-b6f3-da62ed6e7dca |
+| `PAYNOW_INTEGRATION_KEY` | (set in .env) |
 
 ### .htaccess (shop) — CURRENT
 ```

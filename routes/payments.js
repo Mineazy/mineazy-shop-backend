@@ -1,4 +1,5 @@
 ﻿const express = require('express');
+const crypto = require('crypto');
 const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
 const Product = require('../models/Product');
@@ -45,6 +46,73 @@ router.get('/methods', (req, res) => {
   res.json(methods);
 });
 
+const STAFF_ROLES = ['order_manager', 'super_admin'];
+const ORDER_ID_PATTERN = /^[0-9a-f]{24}$/i;
+
+const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
+
+const tokenMatches = (storedHash, provided) => {
+  if (typeof storedHash !== 'string' || !storedHash || typeof provided !== 'string' || !provided) {
+    return false;
+  }
+  const a = Buffer.from(storedHash);
+  const b = Buffer.from(sha256(provided));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+
+// The caller may act on an order if they are its signed-in owner, staff, or
+// (for guest orders) present the paymentToken issued when the order was created.
+const canActOnOrder = (req, order, paymentToken) => {
+  if (req.user && STAFF_ROLES.includes(req.user.role)) {
+    return true;
+  }
+  if (order.user) {
+    return Boolean(req.user && String(order.user) === String(req.user._id));
+  }
+  return tokenMatches(order.paymentTokenHash, paymentToken);
+};
+
+// Loads the order named in req.body and checks the caller may pay for it and
+// that it is still awaiting a payment decision. Sends the error response and
+// returns null when not.
+const loadPayableOrder = async (req, res) => {
+  const { orderId, paymentToken } = req.body || {};
+
+  if (typeof orderId !== 'string' || !ORDER_ID_PATTERN.test(orderId)) {
+    res.status(400).json({ message: 'A valid order ID is required' });
+    return null;
+  }
+
+  const order = await Order.findById(orderId);
+
+  // Same response for "missing" and "not yours" so order IDs can't be probed
+  if (!order || !canActOnOrder(req, order, paymentToken)) {
+    res.status(404).json({ message: 'Order not found' });
+    return null;
+  }
+
+  if (order.paymentStatus === 'paid') {
+    res.status(409).json({ message: 'Order already paid' });
+    return null;
+  }
+
+  if (order.status !== 'pending') {
+    res.status(409).json({ message: `Order is already ${order.status}` });
+    return null;
+  }
+
+  return order;
+};
+
+const publicOrderSummary = (order) => ({
+  _id: order._id,
+  orderNumber: order.orderNumber,
+  status: order.status,
+  paymentStatus: order.paymentStatus
+});
+
+const toCents = (value) => Math.round(Number(value) * 100);
+
 async function populateItemsProduct(docs) {
   const arr = Array.isArray(docs) ? docs : [docs];
   const ids = [];
@@ -71,22 +139,10 @@ async function populateItemsProduct(docs) {
 // @route   POST /api/payments/paynow/initiate
 // @desc    Initiate Paynow payment
 // @access  Public
-router.post('/paynow/initiate', async (req, res) => {
+router.post('/paynow/initiate', optionalAuth, async (req, res) => {
   try {
-    const { orderId } = req.body;
-
-    if (!orderId) {
-      return res.status(400).json({ message: 'Order ID is required' });
-    }
-
-    const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    if (order.paymentStatus === 'paid') {
-      return res.status(400).json({ message: 'Order already paid' });
-    }
+    const order = await loadPayableOrder(req, res);
+    if (!order) return;
 
     console.log('≡ƒÆ│ Initiating Paynow payment for order:', order.orderNumber);
 
@@ -183,88 +239,109 @@ router.post('/paynow/initiate', async (req, res) => {
 // @access  Public
 router.post('/paynow/callback', async (req, res) => {
   try {
-    console.log('≡ƒôÑ Paynow callback received:', req.body);
+    const { reference, paynowreference, amount, status, hash } = req.body || {};
 
-    const { reference, paynowreference, amount, status, hash } = req.body;
+    console.log('Paynow callback received:', { reference, paynowreference, amount, status });
 
-    if (!reference || !hash) {
-      console.error('Γ¥î Missing required fields in callback');
+    if (!reference || !hash || !status) {
+      console.error('Missing required fields in Paynow callback');
       return res.status(400).json({ message: 'Invalid callback data' });
     }
 
+    // Verify hash over every field Paynow sent, in the order it sent them
     const callbackData = { ...req.body };
     delete callbackData.hash;
-    
-    const isValidHash = paynow.verifyHash(callbackData, hash);
-    
-    if (!isValidHash) {
-      console.error('Γ¥î Invalid hash in Paynow callback');
+
+    if (!paynow.verifyHash(callbackData, hash)) {
+      console.error('Invalid hash in Paynow callback');
       return res.status(400).json({ message: 'Invalid hash' });
     }
 
     const order = await Order.findOne({ orderNumber: reference });
     if (!order) {
-      console.error('Γ¥î Order not found for reference:', reference);
+      console.error('Order not found for Paynow reference:', reference);
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    console.log(`≡ƒôè Updating order ${order.orderNumber} - Status: ${status}`);
+    const statusLower = String(status).toLowerCase();
+    const isPaid = statusLower === 'paid' || statusLower === 'awaiting delivery';
+    const isFailed = statusLower === 'cancelled' || statusLower === 'failed';
 
-    const statusLower = status.toLowerCase();
-    
-    if (statusLower === 'paid') {
-      order.paymentStatus = 'paid';
-      order.status = 'processing';
-      console.log('Γ£à Payment successful for order:', order.orderNumber);
-    } else if (statusLower === 'cancelled' || statusLower === 'failed') {
-      order.paymentStatus = 'failed';
-      console.log('Γ¥î Payment failed for order:', order.orderNumber);
-    } else if (statusLower === 'awaiting delivery') {
-      order.paymentStatus = 'paid';
-      order.status = 'processing';
+    // Paynow retries callbacks; a paid order is final and must not be changed
+    // again (no downgrades, no duplicate confirmation emails).
+    if (order.paymentStatus === 'paid') {
+      console.log(`Callback for already-paid order ${order.orderNumber} ignored`);
+      return res.json({ message: 'Callback already processed' });
     }
 
-    await Order.update({ _id: order._id }, order);
+    if (!isPaid && !isFailed) {
+      // Intermediate states (e.g. "Sent", "Created") need no change
+      console.log(`Paynow status "${status}" for ${order.orderNumber} - no change`);
+      return res.json({ message: 'Callback processed successfully' });
+    }
 
-    const transaction = await Transaction.findOne({ order: order._id });
+    if (isPaid && (!Number.isFinite(Number(amount)) || toCents(amount) !== toCents(order.total))) {
+      console.error(`Paynow amount mismatch for ${order.orderNumber}: received ${amount}, expected ${Number(order.total).toFixed(2)}`);
+      return res.status(400).json({ message: 'Amount mismatch' });
+    }
+
+    if (isPaid) {
+      order.paymentStatus = 'paid';
+      order.status = 'processing';
+      if (paynowreference) order.paynowReference = paynowreference;
+    } else {
+      order.paymentStatus = 'failed';
+    }
+
+    // The paymentStatus guard makes this a once-only transition: NeDB runs
+    // writes one at a time, so a concurrent duplicate callback updates 0 docs.
+    const updatedCount = await Order.update(
+      { _id: order._id, paymentStatus: { $ne: 'paid' } },
+      order
+    );
+
+    if (!updatedCount) {
+      return res.json({ message: 'Callback already processed' });
+    }
+
+    const transaction = await Transaction.findOne({ order: order._id, paymentMethod: 'paynow' });
     if (transaction) {
-      transaction.status = statusLower === 'paid' ? 'completed' : 'failed';
+      transaction.status = isPaid ? 'completed' : 'failed';
       transaction.paynowData = {
         ...transaction.paynowData,
-        status: status,
+        status,
         paynowReference: paynowreference,
-        amount: amount
+        amount
       };
       await Transaction.update({ _id: transaction._id }, transaction);
     }
 
-    if (statusLower === 'paid') {
+    if (isPaid) {
+      console.log('Payment successful for order:', order.orderNumber);
       try {
         await sendOrderConfirmationWithInvoice(order);
       } catch (emailError) {
         console.error('Failed to send confirmation email:', emailError);
       }
+    } else {
+      console.log('Payment failed for order:', order.orderNumber);
     }
 
     res.json({ message: 'Callback processed successfully' });
 
   } catch (error) {
-    console.error('Γ¥î Callback processing error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Callback processing error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 // @route   POST /api/payments/cash-on-delivery
 // @desc    Process COD order
 // @access  Public
-router.post('/cash-on-delivery', async (req, res) => {
+router.post('/cash-on-delivery', optionalAuth, async (req, res) => {
   try {
-    const { orderId } = req.body;
-
-    const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
+    const order = await loadPayableOrder(req, res);
+    if (!order) return;
 
     order.paymentMethod = 'cash_on_delivery';
     order.paymentStatus = 'payment_on_delivery';
@@ -282,7 +359,7 @@ router.post('/cash-on-delivery', async (req, res) => {
 
     res.json({
       message: 'Cash on delivery order processed',
-      order
+      order: publicOrderSummary(order)
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -458,14 +535,10 @@ router.get('/guest-invoice/:orderNumber', async (req, res) => {
 // @route   POST /api/payments/collection
 // @desc    Process collection order
 // @access  Public
-router.post('/collection', async (req, res) => {
+router.post('/collection', optionalAuth, async (req, res) => {
   try {
-    const { orderId } = req.body;
-
-    const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
+    const order = await loadPayableOrder(req, res);
+    if (!order) return;
 
     order.paymentMethod = 'collection';
     order.paymentStatus = 'payment_on_collection';
@@ -483,7 +556,7 @@ router.post('/collection', async (req, res) => {
 
     res.json({
       message: 'Collection order processed',
-      order
+      order: publicOrderSummary(order)
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

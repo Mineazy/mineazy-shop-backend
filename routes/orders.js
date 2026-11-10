@@ -1,4 +1,5 @@
 ﻿const express = require('express');
+const crypto = require('crypto');
 const Order = require('../models/Order');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
@@ -92,6 +93,11 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
       notes
     };
 
+    // Secret that lets whoever created this order (incl. guests) choose or
+    // start its payment. Only its hash is stored, so order lookups can't leak it.
+    const paymentToken = crypto.randomBytes(32).toString('hex');
+    orderData.paymentTokenHash = crypto.createHash('sha256').update(paymentToken).digest('hex');
+
     switch (paymentMethod) {
       case 'cash_on_delivery':
         orderData.paymentStatus = 'payment_on_delivery';
@@ -145,7 +151,9 @@ router.post('/', optionalAuth, orderValidation.create, async (req, res) => {
         paymentStatus: order.paymentStatus,
         status: order.status,
         createdAt: order.createdAt
-      }
+      },
+      // Only ever returned here; required by guests for /api/payments/* calls
+      paymentToken
     });
   } catch (error) {
     console.error('Order creation error:', error);

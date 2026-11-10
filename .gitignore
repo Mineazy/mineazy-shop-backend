@@ -10,3 +10,5 @@ test_dns.js
 test_srv.js
 srv_debug.json
 dns_test.json
+# Live NeDB database files (customer data) - never commit
+data/*.db

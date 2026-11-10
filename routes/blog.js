@@ -243,7 +243,7 @@ router.get('/archive', async (req, res) => {
 router.get('/posts/:slug', getSinglePost);
 router.get('/:slug', getSinglePost);
 
-router.post('/', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
+router.post(['/', '/posts'], auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
   try {
     const {
       title,
@@ -292,7 +292,7 @@ router.post('/', auth, authorize('content_manager', 'super_admin'), upload.singl
   }
 });
 
-router.put('/:id', auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
+router.put(['/:id', '/posts/:id'], auth, authorize('content_manager', 'super_admin'), upload.single('featuredImage'), async (req, res) => {
   try {
     const {
       title,
@@ -345,7 +345,7 @@ router.put('/:id', auth, authorize('content_manager', 'super_admin'), upload.sin
   }
 });
 
-router.delete('/:id', auth, authorize('content_manager', 'super_admin'), async (req, res) => {
+router.delete(['/:id', '/posts/:id'], auth, authorize('content_manager', 'super_admin'), async (req, res) => {
   try {
     const post = await BlogPost.findById(req.params.id);
     if (!post) {
